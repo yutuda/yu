@@ -1,2 +1,5 @@
-# yu
-百宝袋
+# Gate Quant Lab
+
+Gate Quant Lab website source migrated from the Sites project.
+
+The original Sites deployment remains unchanged while GitHub hosting is prepared.
