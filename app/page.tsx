@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 
 type Signal = 'LONG' | 'SHORT';
-type Page = '总览' | '市场扫描' | '回测实验室' | '策略版本' | '告警中心';
+type Page = '总览' | '市场扫描' | '回测实验室' | '杠杆压力测试' | '策略版本' | '告警中心';
 type StrategyKey = 'rank-v25' | 'rank-v1';
 
 const strategyCatalog: Record<StrategyKey, { name: string; version: string; source: string; market: string; summary: string; mode: string }> = {
@@ -32,6 +32,13 @@ const instruments = [
   { symbol: 'CRCLX_USDT', name: 'Circle', change: -4.12, rank: 6, signal: 'SHORT' as Signal, price: '104.50', atr: '4.48', vwap: '-1.1%', volume: '¥ 5.2M' },
   { symbol: 'MUU_USDT', name: 'Micron', change: -3.84, rank: 7, signal: 'SHORT' as Signal, price: '152.28', atr: '5.76', vwap: '-0.8%', volume: '¥ 4.4M' },
   { symbol: 'NVDAX_USDT', name: 'NVIDIA x', change: -2.96, rank: 8, signal: 'SHORT' as Signal, price: '176.90', atr: '6.15', vwap: '-0.6%', volume: '¥ 3.9M' },
+];
+
+const leverageTests = [
+  { key: 'leverage-20x', label: '美股永续 · 20x', universe: '8 个当前可交易美股永续', trades: 433, average: '-5.5584%', profitFactor: '0.6025', liquidation: '5.54%', foldRange: '0.51–0.70', tone: 'warning' },
+  { key: 'leverage-40x', label: '美股永续 · 40x', universe: '8 个当前可交易美股永续', trades: 433, average: '-13.3790%', profitFactor: '0.5335', liquidation: '19.63%', foldRange: '0.43–0.62', tone: 'negative' },
+  { key: 'leverage-60x', label: '美股永续 · 60x', universe: '8 个当前可交易美股永续', trades: 433, average: '-20.9013%', profitFactor: '0.4822', liquidation: '32.79%', foldRange: '0.42–0.54', tone: 'negative' },
+  { key: 'crypto-100x', label: '主流虚拟货币 · 100x', universe: 'BTC / ETH / BNB / SOL / XRP', trades: 450, average: '-36.8411%', profitFactor: '0.2524', liquidation: '40.00%', foldRange: '0.13–0.46', tone: 'negative' },
 ];
 
 const equity = [
@@ -60,6 +67,7 @@ const navItems: Array<{ label: Page; icon: typeof LayoutDashboard }> = [
   { label: '总览', icon: LayoutDashboard },
   { label: '市场扫描', icon: Search },
   { label: '回测实验室', icon: FlaskConical },
+  { label: '杠杆压力测试', icon: ShieldCheck },
   { label: '策略版本', icon: SlidersHorizontal },
   { label: '告警中心', icon: Bell },
 ];
@@ -125,6 +133,10 @@ function BacktestPage({ setToast, strategy }: { setToast: (message: string) => v
   return strategy === 'rank-v1' ? <TradingViewBacktest setToast={setToast} /> : <GateBacktestPage setToast={setToast} />;
 }
 
+function LeverageStressPage() {
+  return <><SectionHeading kicker="Leverage stress test" title="杠杆压力测试" description="用同一套 Rank Pullback v25 信号，分别观察成本、爆仓阈值与样本外折叠表现。" /><div className="risk-banner"><AlertTriangle size={17} /><div><strong>研究结论</strong><span>四个场景的利润因子都低于 1；该指标当前不适合被直接放大成 20x、40x、60x 或 100x 实盘仓位。</span></div><ShieldCheck size={17} /></div><div className="stress-grid">{leverageTests.map((test) => <Card className="stress-card" key={test.key}><CardHeader><div className="card-heading-row"><div><CardTitle>{test.label}</CardTitle><CardDescription>{test.universe}</CardDescription></div><Badge className={`status-badge ${test.tone === 'warning' ? 'warning' : 'danger'}`}>{test.tone === 'warning' ? '相对最低风险' : '高风险'}</Badge></div></CardHeader><CardContent><div className="stress-metrics"><div><span>交易数</span><strong>{test.trades}</strong></div><div><span>平均单笔净收益</span><strong className="negative-text">{test.average}</strong></div><div><span>利润因子</span><strong className="negative-text">{test.profitFactor}</strong></div><div><span>近似爆仓占比</span><strong className="negative-text">{test.liquidation}</strong></div></div><div className="stress-foot"><span>4 折利润因子范围</span><strong>{test.foldRange}</strong></div></CardContent></Card>)}</div><div className="strategy-layout stress-lower"><Card className="rules-card"><CardHeader><CardTitle>建议提取</CardTitle><CardDescription>基于约 41 天、15 分钟数据的压力测试</CardDescription></CardHeader><CardContent className="rule-list"><div className="rule-item"><span className="rule-index">01</span><span className="rule-icon"><ShieldCheck size={16} /></span><div><strong>保持自动下单关闭</strong><p>20x 是相对最不差的场景，但利润因子仍为 0.6025，不能视为可交易优势。</p></div></div><div className="rule-item"><span className="rule-index">02</span><span className="rule-icon"><AlertTriangle size={16} /></span><div><strong>先补齐真实成本</strong><p>历史资金费率、盘口滑点、风险限额与组合保证金尚未完整重建，100x 结果只是保守压力假设。</p></div></div><div className="rule-item"><span className="rule-index">03</span><span className="rule-icon"><FlaskConical size={16} /></span><div><strong>先做样本外验证</strong><p>下一步应扩展到 6–12 个月，做 walk-forward、市场状态分层和 dry-run，再决定是否保留该信号。</p></div></div></CardContent></Card><Card className="params-card"><CardHeader><CardTitle>测试口径</CardTitle><CardDescription>可复现的压力假设</CardDescription></CardHeader><CardContent><dl className="params-list"><div><dt>数据</dt><dd>Gate 公共 15m</dd></div><div><dt>历史窗口</dt><dd>4 × 1000 根</dd></div><div><dt>手续费</dt><dd>6 bps / 边</dd></div><div><dt>滑点</dt><dd>2 bps / 边</dd></div><div><dt>资金费率</dt><dd>1 bps / 8h</dd></div><div><dt>爆仓模型</dt><dd>孤立保证金近似</dd></div><div><dt>自动下单</dt><dd>关闭</dd></div></dl></CardContent></Card></div></>;
+}
+
 function StrategyPage({ setToast, strategy, onSelect }: { setToast: (message: string) => void; strategy: StrategyKey; onSelect: (strategy: StrategyKey) => void }) {
   const picker = <div className="strategy-picker"><span>策略库</span>{(Object.entries(strategyCatalog) as Array<[StrategyKey, typeof strategyCatalog[StrategyKey]]>).map(([key, item]) => <button key={key} className={strategy === key ? 'selected' : ''} onClick={() => onSelect(key)}><span className="asset-dot amber" />{item.name} <small>{item.version}</small></button>)}</div>;
   if (strategy === 'rank-v1') return <>{picker}<TradingViewBacktest setToast={setToast} /></>;
@@ -144,7 +156,7 @@ export default function Home() {
   const runRefresh = () => { setRefreshing(true); setToast('正在读取最新公开行情…'); window.setTimeout(() => { setRefreshing(false); setToast('扫描完成：数据已更新'); window.setTimeout(() => setToast(''), 2200); }, 900); };
   const goTo = (page: Page) => { setActiveNav(page); setToast(`已打开${page}`); };
   const chooseStrategy = (strategy: StrategyKey) => { setSelectedStrategy(strategy); setActiveNav('策略版本'); setToast(`${strategyCatalog[strategy].name} ${strategyCatalog[strategy].version} 已选中`); };
-  const pageContent = activeNav === '总览' ? <Overview goTo={goTo} setToast={setToast} strategy={selectedStrategy} /> : activeNav === '市场扫描' ? <ScannerPage setToast={setToast} strategy={selectedStrategy} /> : activeNav === '回测实验室' ? <BacktestPage setToast={setToast} strategy={selectedStrategy} /> : activeNav === '策略版本' ? <StrategyPage setToast={setToast} strategy={selectedStrategy} onSelect={chooseStrategy} /> : <AlertsPage setToast={setToast} />;
+  const pageContent = activeNav === '总览' ? <Overview goTo={goTo} setToast={setToast} strategy={selectedStrategy} /> : activeNav === '市场扫描' ? <ScannerPage setToast={setToast} strategy={selectedStrategy} /> : activeNav === '回测实验室' ? <BacktestPage setToast={setToast} strategy={selectedStrategy} /> : activeNav === '杠杆压力测试' ? <LeverageStressPage /> : activeNav === '策略版本' ? <StrategyPage setToast={setToast} strategy={selectedStrategy} onSelect={chooseStrategy} /> : <AlertsPage setToast={setToast} />;
 
   return <main className="app-shell">
     <aside className="sidebar"><div className="brand-lockup"><div className="brand-mark"><ChartNoAxesCombined size={19} /></div><div><p className="brand-name">GATE QUANT LAB</p><p className="brand-subtitle">Research console</p></div></div><div className="sidebar-section-label">工作台</div><nav className="sidebar-nav" aria-label="主导航">{navItems.map(({ label, icon: Icon }) => <button key={label} className={`nav-item ${activeNav === label ? 'active' : ''}`} onClick={() => setActiveNav(label)}><Icon size={17} strokeWidth={activeNav === label ? 2.3 : 1.8} /><span>{label}</span>{label === '告警中心' && <span className="nav-count">2</span>}</button>)}</nav><div className="sidebar-divider" /><div className="sidebar-section-label">策略库</div><div className="asset-list"><button className={`asset-item ${selectedStrategy === 'rank-v25' ? 'selected' : ''}`} onClick={() => chooseStrategy('rank-v25')}><span className="asset-dot amber" />Rank Pullback <span className="asset-version">v25</span></button><button className={`asset-item ${selectedStrategy === 'rank-v1' ? 'selected' : ''}`} onClick={() => chooseStrategy('rank-v1')}><span className="asset-dot violet" />Rank Pullback Strategy <span className="asset-version">V1</span></button><button className="asset-item" onClick={() => setToast('BTC Trend Scout 尚未接入报告')}><span className="asset-dot blue" />BTC Trend Scout</button><button className="asset-item" onClick={() => setToast('US Equity Factors 尚未接入报告')}><span className="asset-dot blue" />US Equity Factors</button></div><div className="sidebar-footer"><div className="status-pill"><span className="pulse-dot" /> Scanner online</div><p className="footer-note">仅用于研究与模拟<br />自动下单：已关闭</p></div></aside>
@@ -152,3 +164,4 @@ export default function Home() {
     {toast && <output className="toast"><span className="toast-mark"><ShieldCheck size={14} /></span>{toast}</output>}
   </main>;
 }
+
