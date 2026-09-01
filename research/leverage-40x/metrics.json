@@ -1,0 +1,105 @@
+{
+  "scenario": {
+    "key": "leverage-40x",
+    "label": "美股永续 · 40x",
+    "leverage": 40,
+    "universe": "stock_perpetuals"
+  },
+  "symbols": [
+    "SKHYNIX_USDT",
+    "SPCX_USDT",
+    "SNDK_USDT",
+    "MUU_USDT",
+    "SOXL_USDT",
+    "CRCLX_USDT",
+    "SKHY_USDT",
+    "NVDAX_USDT"
+  ],
+  "overall": {
+    "trades": 433,
+    "win_rate_pct": 33.72,
+    "average_net_return_pct": -13.379,
+    "median_net_return_pct": -10.9444,
+    "profit_factor": 0.5335,
+    "compound_return_pct": -100.0,
+    "max_drawdown_pct": -100.0,
+    "liquidation_rate_pct": 19.63,
+    "liquidations": 85,
+    "long_average_net_pct": -12.2618,
+    "short_average_net_pct": -14.8078,
+    "p05_trade_pct": -100.0,
+    "p95_trade_pct": 93.8605
+  },
+  "walk_forward": [
+    {
+      "fold": 1,
+      "trades": 109,
+      "win_rate_pct": 33.94,
+      "average_net_return_pct": -14.5857,
+      "median_net_return_pct": -18.9146,
+      "profit_factor": 0.6222,
+      "compound_return_pct": -100.0,
+      "max_drawdown_pct": -100.0,
+      "liquidation_rate_pct": 30.28,
+      "liquidations": 33,
+      "long_average_net_pct": -30.1626,
+      "short_average_net_pct": -8.3948,
+      "p05_trade_pct": -100.0,
+      "p95_trade_pct": 132.402
+    },
+    {
+      "fold": 2,
+      "trades": 108,
+      "win_rate_pct": 36.11,
+      "average_net_return_pct": -13.4702,
+      "median_net_return_pct": -9.1144,
+      "profit_factor": 0.4834,
+      "compound_return_pct": -100.0,
+      "max_drawdown_pct": -100.0,
+      "liquidation_rate_pct": 16.67,
+      "liquidations": 18,
+      "long_average_net_pct": -11.4805,
+      "short_average_net_pct": -16.2559,
+      "p05_trade_pct": -100.0,
+      "p95_trade_pct": 59.701
+    },
+    {
+      "fold": 3,
+      "trades": 108,
+      "win_rate_pct": 34.26,
+      "average_net_return_pct": -10.778,
+      "median_net_return_pct": -8.7703,
+      "profit_factor": 0.5576,
+      "compound_return_pct": -100.0,
+      "max_drawdown_pct": -100.0,
+      "liquidation_rate_pct": 14.81,
+      "liquidations": 16,
+      "long_average_net_pct": -7.0937,
+      "short_average_net_pct": -23.01,
+      "p05_trade_pct": -100.0,
+      "p95_trade_pct": 79.7793
+    },
+    {
+      "fold": 4,
+      "trades": 108,
+      "win_rate_pct": 30.56,
+      "average_net_return_pct": -14.6708,
+      "median_net_return_pct": -9.9332,
+      "profit_factor": 0.4263,
+      "compound_return_pct": -100.0,
+      "max_drawdown_pct": -100.0,
+      "liquidation_rate_pct": 16.67,
+      "liquidations": 18,
+      "long_average_net_pct": -11.099,
+      "short_average_net_pct": -20.2837,
+      "p05_trade_pct": -100.0,
+      "p95_trade_pct": 70.9212
+    }
+  ],
+  "bootstrap": {
+    "samples": 1000,
+    "p05_compound_return_pct": -100.0,
+    "p50_compound_return_pct": -100.0,
+    "p95_compound_return_pct": -100.0
+  }
+}
