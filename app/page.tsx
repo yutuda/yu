@@ -75,7 +75,8 @@ type Page =
   | '杠杆压力测试'
   | '策略版本'
   | '告警中心';
-type StrategyKey = 'rank-v26' | 'rank-v25' | 'rank-v1';
+type StrategyKey = 'rank-v27' | 'rank-v26' | 'rank-v25' | 'rank-v1';
+type TestedStrategyKey = Exclude<StrategyKey, 'rank-v1'>;
 
 const strategyCatalog: Record<
   StrategyKey,
@@ -88,6 +89,14 @@ const strategyCatalog: Record<
     mode: string;
   }
 > = {
+  'rank-v27': {
+    name: 'Rank Pullback Precision',
+    version: 'v27',
+    source: 'Gate V27 Precision Filter',
+    market: 'Gate USDT 永续',
+    summary: '只取前后2名，并限制成交量、ADX与ATR，优先信号质量。',
+    mode: '独立研究候选 · 已完成完整回测',
+  },
   'rank-v26': {
     name: 'Rank Pullback Guarded',
     version: 'v26',
@@ -111,6 +120,55 @@ const strategyCatalog: Record<
     market: '当前图表 + 4 个对比标的',
     summary: 'TradingView 当前图表策略，比较 4 个手动设置的对比标的短线强弱。',
     mode: '等待生成本地报告',
+  },
+};
+
+const strategyMetrics: Record<
+  TestedStrategyKey,
+  {
+    trades: number;
+    compound: string;
+    profitFactor: string;
+    winRate: string;
+    drawdown: string;
+    exits: Array<{ name: string; value: number }>;
+  }
+> = {
+  'rank-v27': {
+    trades: 71,
+    compound: '+20.58%',
+    profitFactor: '1.942',
+    winRate: '53.52%',
+    drawdown: '-5.78%',
+    exits: [
+      { name: '目标 2R', value: 9 },
+      { name: '止损 1.5 ATR', value: 22 },
+      { name: '时间退出', value: 40 },
+    ],
+  },
+  'rank-v26': {
+    trades: 190,
+    compound: '+20.65%',
+    profitFactor: '1.287',
+    winRate: '47.37%',
+    drawdown: '-12.92%',
+    exits: [
+      { name: '目标 2R', value: 26 },
+      { name: '止损 1.5 ATR', value: 67 },
+      { name: '时间退出', value: 97 },
+    ],
+  },
+  'rank-v25': {
+    trades: 433,
+    compound: '+19.73%',
+    profitFactor: '1.114',
+    winRate: '45.03%',
+    drawdown: '-21.50%',
+    exits: [
+      { name: '目标 2R', value: 74 },
+      { name: '止损 1.5 ATR', value: 173 },
+      { name: '时间退出', value: 186 },
+    ],
   },
 };
 
@@ -382,7 +440,7 @@ const leverageTests = [
   },
 ];
 
-const equity = [
+const equityV26 = [
   { time: '07/22', value: 98.54 },
   { time: '07/26', value: 109.26 },
   { time: '07/31', value: 119.86 },
@@ -393,6 +451,19 @@ const equity = [
   { time: '08/21', value: 115.54 },
   { time: '08/27', value: 118.52 },
   { time: '09/01', value: 120.65 },
+];
+
+const equityV27 = [
+  { time: '07/22', value: 98.54 },
+  { time: '07/24', value: 106.7 },
+  { time: '08/01', value: 111.58 },
+  { time: '08/04', value: 118.45 },
+  { time: '08/07', value: 113.32 },
+  { time: '08/11', value: 114.69 },
+  { time: '08/15', value: 115.02 },
+  { time: '08/20', value: 115.62 },
+  { time: '08/26', value: 121.22 },
+  { time: '09/01', value: 120.58 },
 ];
 
 const performance = [
@@ -460,6 +531,29 @@ const strategyRulesV26 = [
     title: '动态风险预算',
     body: '单笔风险预算 0.5%，名义杠杆硬上限 10x；当前样本平均实际杠杆约 1.07x。',
     icon: ShieldCheck,
+  },
+];
+
+const strategyRulesV27 = [
+  {
+    title: '只取前后 2 名',
+    body: '删除样本中利润因子低于 1 的第 3 名信号，减少弱边际入场。',
+    icon: Gauge,
+  },
+  {
+    title: '成交量质量带',
+    body: '成交量必须为 30 根均量的 1.0–2.0 倍，过滤缩量确认和极端放量末端。',
+    icon: Activity,
+  },
+  {
+    title: '趋势末端保护',
+    body: 'ADX 不高于 40，ATR 占价格比例不高于 2%，避免异常波动追价。',
+    icon: ShieldCheck,
+  },
+  {
+    title: '退出保持不变',
+    body: '继续使用 1.5 ATR 止损、2R 目标和 8 根 K 线持仓，以隔离入场修改效果。',
+    icon: Target,
   },
 ];
 
@@ -642,12 +736,25 @@ function Overview({
 }) {
   const selectedStrategy = strategyCatalog[strategy];
   const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT'>('全部');
+  const strategyInstruments = useMemo(
+    () =>
+      strategy === 'rank-v27'
+        ? instruments.filter((item) => item.rank <= 2 || item.rank >= 7)
+        : instruments,
+    [instruments, strategy],
+  );
   const filtered = useMemo(
     () =>
-      instruments.filter((item) => market === '全部' || item.signal === market),
-    [instruments, market],
+      strategyInstruments.filter(
+        (item) => market === '全部' || item.signal === market,
+      ),
+    [market, strategyInstruments],
   );
-  const isV26 = strategy === 'rank-v26';
+  const testedKey: TestedStrategyKey =
+    strategy === 'rank-v1' ? 'rank-v26' : strategy;
+  const metrics = strategyMetrics[testedKey];
+  const chartData = testedKey === 'rank-v27' ? equityV27 : equityV26;
+  const isV27 = strategy === 'rank-v27';
   return (
     <>
       <section className="hero-row">
@@ -675,9 +782,9 @@ function Overview({
         <div>
           <strong>研究提示</strong>
           <span>
-            {isV26
-              ? 'v26 的利润因子与回撤优于 v25，但历史仅约 41 天，仍标记为研究候选。'
-              : '旧版用于对照；高杠杆压力结果不等于可直接开仓。'}
+            {isV27
+              ? 'v27 的入场质量指标优于 v26，但只有 71 笔交易，仍需独立样本外验证。'
+              : '现有结果用于研究对照；高杠杆压力结果不等于可直接开仓。'}
           </span>
         </div>
         <button aria-label="查看风险说明" onClick={() => goTo('策略版本')}>
@@ -687,27 +794,27 @@ function Overview({
       <section className="metric-grid">
         <MetricCard
           label="复合收益"
-          value={isV26 ? '+20.65%' : '+19.73%'}
+          value={metrics.compound}
           detail="约 41 天 · 零成本 1x 压力视图"
           tone="positive"
           icon={TrendingDown}
         />
         <MetricCard
           label="利润因子"
-          value={isV26 ? '1.287' : '1.114'}
-          detail={isV26 ? 'v25 对照为 1.114' : 'v26 候选为 1.287'}
+          value={metrics.profitFactor}
+          detail={isV27 ? 'v26 对照为 1.287' : '当前所选策略'}
           tone="positive"
           icon={Gauge}
         />
         <MetricCard
           label="胜率"
-          value={isV26 ? '47.37%' : '45.03%'}
-          detail={isV26 ? '190 笔交易' : '433 笔交易'}
+          value={metrics.winRate}
+          detail={`${metrics.trades} 笔交易`}
           icon={Activity}
         />
         <MetricCard
           label="最大回撤"
-          value={isV26 ? '-12.92%' : '-21.50%'}
+          value={metrics.drawdown}
           detail="峰值到谷底 · 仍需样本外验证"
           tone="warning"
           icon={ShieldCheck}
@@ -731,7 +838,7 @@ function Overview({
           <CardContent className="chart-content">
             <ResponsiveContainer width="100%" height={246}>
               <AreaChart
-                data={equity}
+                data={chartData}
                 margin={{ top: 16, right: 8, left: -20, bottom: 0 }}
               >
                 <defs>
@@ -971,14 +1078,25 @@ function ScannerPage({
 }) {
   const selectedStrategy = strategyCatalog[strategy];
   const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT'>('全部');
-  const [selectedSymbol, setSelectedSymbol] = useState(instruments[0]?.symbol);
+  const strategyInstruments = useMemo(
+    () =>
+      strategy === 'rank-v27'
+        ? instruments.filter((item) => item.rank <= 2 || item.rank >= 7)
+        : instruments,
+    [instruments, strategy],
+  );
+  const [selectedSymbol, setSelectedSymbol] = useState(
+    strategyInstruments[0]?.symbol,
+  );
   const selected =
-    instruments.find((item) => item.symbol === selectedSymbol) ??
-    instruments[0];
+    strategyInstruments.find((item) => item.symbol === selectedSymbol) ??
+    strategyInstruments[0];
   const filtered = useMemo(
     () =>
-      instruments.filter((item) => market === '全部' || item.signal === market),
-    [instruments, market],
+      strategyInstruments.filter(
+        (item) => market === '全部' || item.signal === market,
+      ),
+    [market, strategyInstruments],
   );
   return (
     <>
@@ -1084,22 +1202,14 @@ function GateBacktestPage({
   strategy,
 }: {
   setToast: (message: string) => void;
-  strategy: Exclude<StrategyKey, 'rank-v1'>;
+  strategy: TestedStrategyKey;
 }) {
   const [costs, setCosts] = useState(false);
   const [running, setRunning] = useState(false);
-  const isV26 = strategy === 'rank-v26';
-  const currentExitBreakdown = isV26
-    ? [
-        { name: '目标 2R', value: 26 },
-        { name: '止损 1.5 ATR', value: 67 },
-        { name: '时间退出', value: 97 },
-      ]
-    : [
-        { name: '目标 2R', value: 74 },
-        { name: '止损 1.5 ATR', value: 173 },
-        { name: '时间退出', value: 186 },
-      ];
+  const selected = strategyCatalog[strategy];
+  const metrics = strategyMetrics[strategy];
+  const currentExitBreakdown = metrics.exits;
+  const chartData = strategy === 'rank-v27' ? equityV27 : equityV26;
   const runBacktest = () => {
     setRunning(true);
     setToast('正在按当前参数重放本地报告…');
@@ -1119,10 +1229,10 @@ function GateBacktestPage({
         <Card className="config-card">
           <CardHeader>
             <CardTitle>
-              {isV26 ? 'Rank Pullback Guarded v26' : 'Rank Pullback v25'}
+              {selected.name} {selected.version}
             </CardTitle>
             <CardDescription>
-              {isV26 ? '正式研究候选配置' : '旧版对照配置'}
+              {strategy === 'rank-v27' ? '独立精选过滤候选' : selected.mode}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1200,7 +1310,7 @@ function GateBacktestPage({
             <div>
               <CardTitle>结果摘要</CardTitle>
               <CardDescription>
-                {isV26 ? '190 笔交易' : '433 笔交易'} · 约 41 天零成本回放
+                {metrics.trades} 笔交易 · 约 41 天零成本回放
               </CardDescription>
             </div>
             <Badge className="status-badge warning">需要复核</Badge>
@@ -1209,26 +1319,24 @@ function GateBacktestPage({
             <div className="result-metrics">
               <div>
                 <span>复合收益</span>
-                <strong>{isV26 ? '+20.65%' : '+19.73%'}</strong>
+                <strong>{metrics.compound}</strong>
               </div>
               <div>
                 <span>利润因子</span>
-                <strong>{isV26 ? '1.287' : '1.114'}</strong>
+                <strong>{metrics.profitFactor}</strong>
               </div>
               <div>
                 <span>胜率</span>
-                <strong>{isV26 ? '47.37%' : '45.03%'}</strong>
+                <strong>{metrics.winRate}</strong>
               </div>
               <div>
                 <span>最大回撤</span>
-                <strong className="negative-text">
-                  {isV26 ? '-12.92%' : '-21.50%'}
-                </strong>
+                <strong className="negative-text">{metrics.drawdown}</strong>
               </div>
             </div>
             <ResponsiveContainer width="100%" height={205}>
               <AreaChart
-                data={equity}
+                data={chartData}
                 margin={{ top: 14, right: 8, left: -20, bottom: 0 }}
               >
                 <CartesianGrid
@@ -1687,8 +1795,14 @@ function StrategyPage({
         <TradingViewBacktest setToast={setToast} />
       </>
     );
+  const isV27 = strategy === 'rank-v27';
   const isV26 = strategy === 'rank-v26';
-  const rules = isV26 ? strategyRulesV26 : strategyRulesV25;
+  const rules = isV27
+    ? strategyRulesV27
+    : isV26
+      ? strategyRulesV26
+      : strategyRulesV25;
+  const selected = strategyCatalog[strategy];
   return (
     <>
       {picker}
@@ -1696,36 +1810,41 @@ function StrategyPage({
         kicker="Strategy registry"
         title="策略版本"
         description={
-          isV26
-            ? 'v26 已完成与 v25 的同数据对照，当前标记为研究候选。'
-            : 'v25 作为旧版基线保留，用于比较过滤规则和风险变化。'
+          isV27
+            ? 'v27 独立运行完整回测；只改变入场质量过滤，退出规则与 v26 相同。'
+            : isV26
+              ? 'v26 已完成与 v25 的同数据对照，作为宽松候选保留。'
+              : 'v25 作为旧版基线保留，用于比较过滤规则和风险变化。'
         }
       />
       <div className="strategy-hero">
         <div>
           <div className="version-row">
             <Badge className="version-badge">
-              {isV26 ? 'v26 · CANDIDATE' : 'v25 · BASELINE'}
+              {isV27
+                ? 'v27 · PRECISION'
+                : isV26
+                  ? 'v26 · CANDIDATE'
+                  : 'v25 · BASELINE'}
             </Badge>
             <span className="muted-label">Gate USDT Perpetuals</span>
           </div>
-          <h2>{isV26 ? 'Rank Pullback Guarded' : 'Rank Pullback'}</h2>
+          <h2>{selected.name}</h2>
           <p>
-            {isV26
-              ? '在横截面排名基础上增加趋势方向、VWAP 同侧和最大追价距离过滤，信号收盘确认后于下一根 15 分钟 K 线开盘模拟成交。'
-              : '用横截面强弱排名寻找趋势中的回踩延续，信号收盘确认，下一根 15 分钟 K 线开盘模拟成交。'}
+            {isV27
+              ? '在 v26 基础上只保留最强和最弱前两名，并限定成交量、ADX 与 ATR；信号减少，但当前样本中的利润因子和胜率更高。'
+              : isV26
+                ? '在横截面排名基础上增加趋势方向、VWAP 同侧和最大追价距离过滤，信号收盘确认后于下一根 15 分钟 K 线开盘模拟成交。'
+                : '用横截面强弱排名寻找趋势中的回踩延续，信号收盘确认，下一根 15 分钟 K 线开盘模拟成交。'}
           </p>
         </div>
         <Button
           onClick={() =>
-            setToast(
-              isV26
-                ? 'v26 已选为研究候选，自动下单仍关闭'
-                : 'v25 已选为对照版本',
-            )
+            setToast(`${selected.version} 已选为研究版本，自动下单仍关闭`)
           }
         >
-          <Check size={15} /> {isV26 ? '研究候选' : '对照版本'}
+          <Check size={15} />{' '}
+          {isV27 ? '精选候选' : isV26 ? '研究候选' : '对照版本'}
         </Button>
       </div>
       <div className="strategy-layout">
@@ -1734,9 +1853,11 @@ function StrategyPage({
             <CardTitle>信号规则</CardTitle>
             <CardDescription>
               来自{' '}
-              {isV26
-                ? 'Gate_V26_Scanner_Improved'
-                : 'Gate_V25_Scanner_Improved'}
+              {isV27
+                ? 'Gate_V27_Precision_Filter'
+                : isV26
+                  ? 'Gate_V26_Scanner_Improved'
+                  : 'Gate_V25_Scanner_Improved'}
             </CardDescription>
           </CardHeader>
           <CardContent className="rule-list">
@@ -1758,7 +1879,11 @@ function StrategyPage({
           <CardHeader>
             <CardTitle>参数快照</CardTitle>
             <CardDescription>
-              {isV26 ? 'V26Config · guarded' : 'StrategyConfig · v25'}
+              {isV27
+                ? 'V27Config · precision'
+                : isV26
+                  ? 'V26Config · guarded'
+                  : 'StrategyConfig · v25'}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1785,13 +1910,25 @@ function StrategyPage({
               </div>
               <div>
                 <dt>排名数量</dt>
-                <dd>Top 3</dd>
+                <dd>{isV27 ? 'Top / Bottom 2' : 'Top / Bottom 3'}</dd>
               </div>
+              {isV27 && (
+                <>
+                  <div>
+                    <dt>成交量比例</dt>
+                    <dd>1.0–2.0x</dd>
+                  </div>
+                  <div>
+                    <dt>质量上限</dt>
+                    <dd>ADX ≤ 40 · ATR ≤ 2%</dd>
+                  </div>
+                </>
+              )}
               <div>
                 <dt>最多持仓</dt>
                 <dd>8 根 K 线</dd>
               </div>
-              {isV26 && (
+              {(isV26 || isV27) && (
                 <div>
                   <dt>单笔风险</dt>
                   <dd>0.5% · 杠杆上限 10x</dd>
@@ -1823,10 +1960,24 @@ function StrategyPage({
           <div className="history-row active">
             <span className="history-dot" />
             <div>
+              <strong>v27 · Rank Pullback Precision</strong>
+              <small>精选候选 · PF 1.942 · 胜率 53.52% · 最大回撤 -5.78%</small>
+            </div>
+            <Badge className="status-badge warning">新增候选</Badge>
+          </div>
+          <div className="history-row">
+            <span className="history-dot muted" />
+            <div>
               <strong>v26 · Rank Pullback Guarded</strong>
               <small>研究候选 · PF 1.287 · 最大回撤 -12.92%</small>
             </div>
-            <Badge className="status-badge warning">研究候选</Badge>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => onSelect('rank-v26')}
+            >
+              打开对照 <ChevronRight size={14} />
+            </Button>
           </div>
           <div className="history-row">
             <span className="history-dot muted" />
@@ -1968,7 +2119,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
 export default function Home() {
   const [activeNav, setActiveNav] = useState<Page>('总览');
   const [selectedStrategy, setSelectedStrategy] =
-    useState<StrategyKey>('rank-v26');
+    useState<StrategyKey>('rank-v27');
   const [instruments, setInstruments] =
     useState<Instrument[]>(initialInstruments);
   const [closedAt, setClosedAt] = useState<number | null>(null);
@@ -2075,6 +2226,13 @@ export default function Home() {
         <div className="sidebar-divider" />
         <div className="sidebar-section-label">策略库</div>
         <div className="asset-list">
+          <button
+            className={`asset-item ${selectedStrategy === 'rank-v27' ? 'selected' : ''}`}
+            onClick={() => chooseStrategy('rank-v27')}
+          >
+            <span className="asset-dot amber" />
+            Rank Pullback Precision <span className="asset-version">v27</span>
+          </button>
           <button
             className={`asset-item ${selectedStrategy === 'rank-v26' ? 'selected' : ''}`}
             onClick={() => chooseStrategy('rank-v26')}
