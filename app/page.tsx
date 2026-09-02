@@ -94,8 +94,9 @@ const strategyCatalog: Record<
     version: 'v27',
     source: 'Gate V27 Precision Filter',
     market: 'Gate USDT 永续',
-    summary: '只取前后2名，并限制成交量、ADX与ATR，优先信号质量。',
-    mode: '独立研究候选 · 已完成完整回测',
+    summary:
+      '只取前后2名，并限制成交量、ADX与ATR；年度独立验证未达到通过标准。',
+    mode: '年度独立验证未通过 · 仅观察',
   },
   'rank-v26': {
     name: 'Rank Pullback Guarded',
@@ -135,15 +136,15 @@ const strategyMetrics: Record<
   }
 > = {
   'rank-v27': {
-    trades: 71,
-    compound: '+20.58%',
-    profitFactor: '1.942',
-    winRate: '53.52%',
-    drawdown: '-5.78%',
+    trades: 862,
+    compound: '-11.95%',
+    profitFactor: '0.964',
+    winRate: '42.00%',
+    drawdown: '-34.14%',
     exits: [
-      { name: '目标 2R', value: 9 },
-      { name: '止损 1.5 ATR', value: 22 },
-      { name: '时间退出', value: 40 },
+      { name: '目标 2R', value: 148 },
+      { name: '止损 1.5 ATR', value: 365 },
+      { name: '时间退出', value: 349 },
     ],
   },
   'rank-v26': {
@@ -170,6 +171,31 @@ const strategyMetrics: Record<
       { name: '时间退出', value: 186 },
     ],
   },
+};
+
+const v27AnnualValidation = {
+  period: '2025-09-02 至 2026-09-02 · 365 天 · 15 分钟',
+  source: 'Bybit USDT 永续公开 K 线代理；Gate 公开 K 线不足一年',
+  primary: {
+    basket: 'BTC / ETH / SOL / BNB / XRP / DOGE / ADA / AVAX',
+    trades: 862,
+    profitFactor: '0.964',
+    winRate: '42.00%',
+    compound: '-11.95%',
+    drawdown: '-34.14%',
+    exits: '148 目标 / 365 止损 / 349 时间退出',
+  },
+  broad: {
+    baskets: 5,
+    trades: 4021,
+    profitFactor: '1.000',
+    winRate: '42.20%',
+  },
+  stress100x: {
+    liquidations: 437,
+    rate: '50.70%',
+  },
+  quarterlyProfitFactors: '0.905 / 0.846 / 0.973 / 1.139',
 };
 
 const initialInstruments: Instrument[] = [
@@ -454,16 +480,11 @@ const equityV26 = [
 ];
 
 const equityV27 = [
-  { time: '07/22', value: 98.54 },
-  { time: '07/24', value: 106.7 },
-  { time: '08/01', value: 111.58 },
-  { time: '08/04', value: 118.45 },
-  { time: '08/07', value: 113.32 },
-  { time: '08/11', value: 114.69 },
-  { time: '08/15', value: 115.02 },
-  { time: '08/20', value: 115.62 },
-  { time: '08/26', value: 121.22 },
-  { time: '09/01', value: 120.58 },
+  { time: '2025/09', value: 100 },
+  { time: '2025/12', value: 92.67 },
+  { time: '2026/03', value: 81.72 },
+  { time: '2026/06', value: 80.23 },
+  { time: '2026/09', value: 88.05 },
 ];
 
 const performance = [
@@ -755,6 +776,9 @@ function Overview({
   const metrics = strategyMetrics[testedKey];
   const chartData = testedKey === 'rank-v27' ? equityV27 : equityV26;
   const isV27 = strategy === 'rank-v27';
+  const validationWindow = isV27
+    ? `${v27AnnualValidation.period} · ${v27AnnualValidation.primary.trades} 笔`
+    : '约 41 天 · 零成本 1x 压力视图';
   return (
     <>
       <section className="hero-row">
@@ -783,7 +807,7 @@ function Overview({
           <strong>研究提示</strong>
           <span>
             {isV27
-              ? 'v27 的入场质量指标优于 v26，但只有 71 笔交易，仍需独立样本外验证。'
+              ? 'v27 年度独立验证：核心八币种 862 笔的 PF 为 0.964，未达到研究通过标准；100x 零成本压力也出现 50.70% 的近似爆仓率。'
               : '现有结果用于研究对照；高杠杆压力结果不等于可直接开仓。'}
           </span>
         </div>
@@ -795,21 +819,24 @@ function Overview({
         <MetricCard
           label="复合收益"
           value={metrics.compound}
-          detail="约 41 天 · 零成本 1x 压力视图"
-          tone="positive"
+          detail={validationWindow}
+          tone={isV27 ? 'negative' : 'positive'}
           icon={TrendingDown}
         />
         <MetricCard
           label="利润因子"
           value={metrics.profitFactor}
-          detail={isV27 ? 'v26 对照为 1.287' : '当前所选策略'}
-          tone="positive"
+          detail={isV27 ? '同一年度核心篮子 v26 对照为 1.048' : '当前所选策略'}
+          tone={isV27 ? 'negative' : 'positive'}
           icon={Gauge}
         />
         <MetricCard
           label="胜率"
           value={metrics.winRate}
-          detail={`${metrics.trades} 笔交易`}
+          detail={
+            isV27 ? '核心八币种 · 固定完整篮子' : `${metrics.trades} 笔交易`
+          }
+          tone={isV27 ? 'warning' : 'neutral'}
           icon={Activity}
         />
         <MetricCard
@@ -827,7 +854,9 @@ function Overview({
               <CardTitle>策略净值曲线</CardTitle>
               <CardDescription>
                 {selectedStrategy.name} {selectedStrategy.version} · 15 分钟 ·
-                约 41 天零成本回放
+                {isV27
+                  ? '年度主测试 · 季度端点 · 零成本'
+                  : '约 41 天零成本回放'}
               </CardDescription>
             </div>
             <div className="chart-legend">
@@ -1210,6 +1239,7 @@ function GateBacktestPage({
   const metrics = strategyMetrics[strategy];
   const currentExitBreakdown = metrics.exits;
   const chartData = strategy === 'rank-v27' ? equityV27 : equityV26;
+  const isV27 = strategy === 'rank-v27';
   const runBacktest = () => {
     setRunning(true);
     setToast('正在按当前参数重放本地报告…');
@@ -1232,7 +1262,7 @@ function GateBacktestPage({
               {selected.name} {selected.version}
             </CardTitle>
             <CardDescription>
-              {strategy === 'rank-v27' ? '独立精选过滤候选' : selected.mode}
+              {isV27 ? '年度独立验证未通过 · 仅保留为观察研究' : selected.mode}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1310,10 +1340,14 @@ function GateBacktestPage({
             <div>
               <CardTitle>结果摘要</CardTitle>
               <CardDescription>
-                {metrics.trades} 笔交易 · 约 41 天零成本回放
+                {isV27
+                  ? `${metrics.trades} 笔交易 · 一年期核心八币种 · 零成本`
+                  : `${metrics.trades} 笔交易 · 约 41 天零成本回放`}
               </CardDescription>
             </div>
-            <Badge className="status-badge warning">需要复核</Badge>
+            <Badge className="status-badge warning">
+              {isV27 ? '年度未通过' : '需要复核'}
+            </Badge>
           </CardHeader>
           <CardContent>
             <div className="result-metrics">
@@ -1351,7 +1385,7 @@ function GateBacktestPage({
                   tick={{ fill: '#918d84', fontSize: 10 }}
                 />
                 <YAxis
-                  domain={[95, 125]}
+                  domain={isV27 ? [75, 105] : [95, 125]}
                   axisLine={false}
                   tickLine={false}
                   tick={{ fill: '#918d84', fontSize: 10 }}
@@ -1375,6 +1409,45 @@ function GateBacktestPage({
           </CardContent>
         </Card>
       </div>
+      {isV27 && (
+        <Card className="exit-card">
+          <CardHeader>
+            <CardTitle>年度独立验证 · 结论</CardTitle>
+            <CardDescription>
+              {v27AnnualValidation.period}；{v27AnnualValidation.source}
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="result-metrics">
+              <div>
+                <span>主测试</span>
+                <strong>{v27AnnualValidation.primary.trades} 笔</strong>
+              </div>
+              <div>
+                <span>全篮子复核</span>
+                <strong>{v27AnnualValidation.broad.trades} 笔</strong>
+              </div>
+              <div>
+                <span>全篮子 PF</span>
+                <strong>{v27AnnualValidation.broad.profitFactor}</strong>
+              </div>
+              <div>
+                <span>100x 近似爆仓</span>
+                <strong className="negative-text">
+                  {v27AnnualValidation.stress100x.liquidations} /{' '}
+                  {v27AnnualValidation.stress100x.rate}
+                </strong>
+              </div>
+            </div>
+            <div className="cost-warning">
+              <AlertTriangle size={15} /> 四个时间段 PF：
+              {v27AnnualValidation.quarterlyProfitFactors}。
+              核心主测试与跨篮子复核均未显示稳定正期望；不应按当前规则开仓或使用
+              100x。
+            </div>
+          </CardContent>
+        </Card>
+      )}
       <Card className="exit-card">
         <CardHeader>
           <CardTitle>退出原因分布</CardTitle>
@@ -1595,15 +1668,15 @@ function LeverageStressPage() {
       <SectionHeading
         kicker="Leverage stress test"
         title="杠杆压力测试"
-        description="本轮按要求忽略交易手续费、滑点与资金费率，仅观察信号收益与杠杆爆仓敏感性。"
+        description="旧版 v25 短窗口压力数据与最新 v27 年度验证并列展示；均按要求忽略手续费、滑点与资金费率。"
       />
       <div className="risk-banner">
         <AlertTriangle size={17} />
         <div>
           <strong>研究结论</strong>
           <span>
-            修正持仓区间后，20x 总体利润因子为 1.1118，但最差时间折叠仍低于
-            1；40x、60x 和 100x 仍未通过。
+            旧版 v25 短窗口中 20x 相对最低风险，但 v27 年度核心样本在 100x
+            零成本压力下仍有 50.70% 的近似爆仓率；当前任何高杠杆方案都不通过。
           </span>
         </div>
         <ShieldCheck size={17} />
@@ -1672,7 +1745,7 @@ function LeverageStressPage() {
           <CardHeader>
             <CardTitle>建议提取</CardTitle>
             <CardDescription>
-              基于约 41 天、15 分钟数据的零成本压力测试
+              旧版短窗口压力数据，已由 v27 年度验证补充复核
             </CardDescription>
           </CardHeader>
           <CardContent className="rule-list">
@@ -1697,8 +1770,9 @@ function LeverageStressPage() {
               <div>
                 <strong>杠杆越高，爆仓越集中</strong>
                 <p>
-                  20x、40x、60x、100x 的近似爆仓占比分别为 0.23%、7.14%、19.82%
-                  和 23.06%；40x 起总体利润因子已经低于 1。
+                  旧版 v25 测试中，20x、40x、60x、100x 的近似爆仓占比分别为
+                  0.23%、7.14%、19.82% 和 23.06%；最新 v27 年度核心样本的 100x
+                  近似爆仓率更高，为 50.70%。
                 </p>
               </div>
             </div>
@@ -1708,10 +1782,11 @@ function LeverageStressPage() {
                 <FlaskConical size={16} />
               </span>
               <div>
-                <strong>先做更长样本外验证</strong>
+                <strong>年度验证未通过，先停止部署</strong>
                 <p>
-                  下一步应扩展到 6–12 个月，做 walk-forward、市场状态分层和
-                  dry-run，再决定是否保留该信号。
+                  v27 已完成一年期、862 笔的主测试且 PF 低于
+                  1。下一步不应加杠杆，
+                  应重新设计入场与退出逻辑，再做成本敏感性和新的样本外验证。
                 </p>
               </div>
             </div>
@@ -1811,7 +1886,7 @@ function StrategyPage({
         title="策略版本"
         description={
           isV27
-            ? 'v27 独立运行完整回测；只改变入场质量过滤，退出规则与 v26 相同。'
+            ? 'v27 的短样本表现较好，但年度独立验证没有通过；当前仅作为规则研究保留。'
             : isV26
               ? 'v26 已完成与 v25 的同数据对照，作为宽松候选保留。'
               : 'v25 作为旧版基线保留，用于比较过滤规则和风险变化。'
@@ -1832,7 +1907,7 @@ function StrategyPage({
           <h2>{selected.name}</h2>
           <p>
             {isV27
-              ? '在 v26 基础上只保留最强和最弱前两名，并限定成交量、ADX 与 ATR；信号减少，但当前样本中的利润因子和胜率更高。'
+              ? '在 v26 基础上只保留最强和最弱前两名，并限定成交量、ADX 与 ATR。短样本改善未迁移到一年期验证：核心八币种 PF 0.964、胜率 42.00%，因此不具备部署条件。'
               : isV26
                 ? '在横截面排名基础上增加趋势方向、VWAP 同侧和最大追价距离过滤，信号收盘确认后于下一根 15 分钟 K 线开盘模拟成交。'
                 : '用横截面强弱排名寻找趋势中的回踩延续，信号收盘确认，下一根 15 分钟 K 线开盘模拟成交。'}
@@ -1844,7 +1919,7 @@ function StrategyPage({
           }
         >
           <Check size={15} />{' '}
-          {isV27 ? '精选候选' : isV26 ? '研究候选' : '对照版本'}
+          {isV27 ? '仅观察' : isV26 ? '研究候选' : '对照版本'}
         </Button>
       </div>
       <div className="strategy-layout">
@@ -1961,9 +2036,12 @@ function StrategyPage({
             <span className="history-dot" />
             <div>
               <strong>v27 · Rank Pullback Precision</strong>
-              <small>精选候选 · PF 1.942 · 胜率 53.52% · 最大回撤 -5.78%</small>
+              <small>
+                年度验证未通过 · 862 笔 · PF 0.964 · 胜率 42.00% · 最大回撤
+                -34.14%
+              </small>
             </div>
-            <Badge className="status-badge warning">新增候选</Badge>
+            <Badge className="status-badge warning">仅观察</Badge>
           </div>
           <div className="history-row">
             <span className="history-dot muted" />
@@ -2348,4 +2426,3 @@ export default function Home() {
     </main>
   );
 }
-
