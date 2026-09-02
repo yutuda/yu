@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -56,6 +56,18 @@ import {
 } from '@/components/ui/card';
 
 type Signal = 'LONG' | 'SHORT';
+type DataState = 'loading' | 'live' | 'error';
+type Instrument = {
+  symbol: string;
+  name: string;
+  change: number;
+  rank: number;
+  signal: Signal;
+  price: string;
+  atr: string;
+  vwap: string;
+  volume: string;
+};
 type Page =
   | '总览'
   | '市场扫描'
@@ -102,7 +114,7 @@ const strategyCatalog: Record<
   },
 };
 
-const instruments = [
+const initialInstruments: Instrument[] = [
   {
     symbol: 'SKHYNIX_USDT',
     name: 'SK hynix',
@@ -170,6 +182,158 @@ const instruments = [
     volume: '¥ 3.9M',
   },
 ];
+
+const GATE_API = 'https://api.gateio.ws/api/v4/futures/usdt';
+const LIVE_UNIVERSE = [
+  ['SKHYNIX_USDT', 'SK hynix'],
+  ['SPCX_USDT', 'CoreWeave'],
+  ['SOXL_USDT', 'Direxion 3x'],
+  ['CRCLX_USDT', 'Circle'],
+  ['MUU_USDT', 'Micron'],
+  ['NVDAX_USDT', 'NVIDIA x'],
+  ['SNDK_USDT', 'SanDisk'],
+  ['SKHY_USDT', 'SK hynix x'],
+] as const;
+
+type GateTicker = {
+  contract: string;
+  last: string;
+  volume_24h_quote?: string;
+  volume_24h_settle?: string;
+};
+
+type GateCandle = {
+  t: number;
+  o: string;
+  h: string;
+  l: string;
+  c: string;
+  v: number;
+};
+
+function formatMarketNumber(value: number) {
+  if (!Number.isFinite(value)) return '—';
+  if (Math.abs(value) >= 100) return value.toFixed(2);
+  if (Math.abs(value) >= 10) return value.toFixed(3);
+  return value.toFixed(4);
+}
+
+function formatVolume(value: number) {
+  if (!Number.isFinite(value)) return '—';
+  if (value >= 1_000_000_000) return `$ ${(value / 1_000_000_000).toFixed(1)}B`;
+  if (value >= 1_000_000) return `$ ${(value / 1_000_000).toFixed(1)}M`;
+  if (value >= 1_000) return `$ ${(value / 1_000).toFixed(1)}K`;
+  return `$ ${value.toFixed(0)}`;
+}
+
+function formatUtcTime(timestamp: number | null) {
+  if (!timestamp) return '正在连接 Gate…';
+  const date = new Date(timestamp * 1000);
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const hour = String(date.getUTCHours()).padStart(2, '0');
+  const minute = String(date.getUTCMinutes()).padStart(2, '0');
+  return `${month}/${day} ${hour}:${minute} UTC`;
+}
+
+async function fetchGateJson<T>(path: string): Promise<T> {
+  const separator = path.includes('?') ? '&' : '?';
+  const response = await fetch(
+    `${GATE_API}${path}${separator}_=${Date.now()}`,
+    {
+      cache: 'no-store',
+      headers: { Accept: 'application/json' },
+    },
+  );
+  if (!response.ok) throw new Error(`Gate API ${response.status}`);
+  return response.json() as Promise<T>;
+}
+
+async function loadLiveInstruments() {
+  const tickers = await fetchGateJson<GateTicker[]>('/tickers');
+  const tickerMap = new Map(tickers.map((ticker) => [ticker.contract, ticker]));
+  const currentCandleStart = Math.floor(Date.now() / 900_000) * 900;
+
+  const calculated = await Promise.all(
+    LIVE_UNIVERSE.map(async ([symbol, name]) => {
+      const candles = await fetchGateJson<GateCandle[]>(
+        `/candlesticks?contract=${encodeURIComponent(symbol)}&interval=15m&limit=80`,
+      );
+      const closed = candles
+        .filter((candle) => Number(candle.t) < currentCandleStart)
+        .sort((a, b) => Number(a.t) - Number(b.t));
+      if (closed.length < 18) throw new Error(`${symbol} K 线不足`);
+
+      const latest = closed.at(-1)!;
+      const reference = closed.at(-17)!;
+      const recent = closed.slice(-16);
+      const atrWindow = closed.slice(-15);
+      const trueRanges = atrWindow.slice(1).map((candle, index) => {
+        const previousClose = Number(atrWindow[index].c);
+        return Math.max(
+          Number(candle.h) - Number(candle.l),
+          Math.abs(Number(candle.h) - previousClose),
+          Math.abs(Number(candle.l) - previousClose),
+        );
+      });
+      const atr =
+        trueRanges.reduce((sum, value) => sum + value, 0) / trueRanges.length;
+      const weighted = recent.reduce(
+        (result, candle) => {
+          const volume = Number(candle.v) || 0;
+          const typical =
+            (Number(candle.h) + Number(candle.l) + Number(candle.c)) / 3;
+          result.priceVolume += typical * volume;
+          result.volume += volume;
+          return result;
+        },
+        { priceVolume: 0, volume: 0 },
+      );
+      const latestClose = Number(latest.c);
+      const vwap = weighted.volume
+        ? weighted.priceVolume / weighted.volume
+        : latestClose;
+      const ticker = tickerMap.get(symbol);
+      const lastPrice = Number(ticker?.last || latestClose);
+      const volume24h = Number(
+        ticker?.volume_24h_quote || ticker?.volume_24h_settle || 0,
+      );
+
+      return {
+        symbol,
+        name,
+        change: (latestClose / Number(reference.c) - 1) * 100,
+        price: formatMarketNumber(lastPrice),
+        atr: formatMarketNumber(atr),
+        vwap: `${lastPrice >= vwap ? '+' : ''}${((lastPrice / vwap - 1) * 100).toFixed(2)}%`,
+        volume: formatVolume(volume24h),
+        closedAt: Number(latest.t) + 900,
+      };
+    }),
+  );
+
+  const ranked = calculated
+    .sort((a, b) => b.change - a.change)
+    .map((item, index) => ({ ...item, rank: index + 1 }));
+  const rows: Instrument[] = ranked
+    .filter((item) => item.rank <= 3 || item.rank > ranked.length - 3)
+    .map((item) => ({
+      symbol: item.symbol,
+      name: item.name,
+      change: item.change,
+      rank: item.rank,
+      signal: item.rank <= 3 ? 'LONG' : 'SHORT',
+      price: item.price,
+      atr: item.atr,
+      vwap: item.vwap,
+      volume: item.volume,
+    }));
+
+  return {
+    rows,
+    closedAt: Math.min(...calculated.map((item) => item.closedAt)),
+  };
+}
 
 const leverageTests = [
   {
@@ -369,9 +533,13 @@ function SectionHeading({
 function ScanTable({
   rows,
   onSelect,
+  closedAt,
+  dataState,
 }: {
-  rows: typeof instruments;
+  rows: Instrument[];
   onSelect: (symbol: string) => void;
+  closedAt: number | null;
+  dataState: DataState;
 }) {
   return (
     <Card className="table-card">
@@ -444,9 +612,14 @@ function ScanTable({
       </div>
       <div className="table-footer">
         <span>
-          <span className="pulse-dot" /> 最后一根已收盘 K 线 · 08/27 16:00 UTC
+          <span className="pulse-dot" />{' '}
+          {dataState === 'error'
+            ? 'Gate 行情暂时连接失败 · 保留上次数据'
+            : `最后一根已收盘 K 线 · ${formatUtcTime(closedAt)}`}
         </span>
-        <span>点击标的查看详情</span>
+        <span>
+          {dataState === 'live' ? '每 60 秒自动更新' : '点击标的查看详情'}
+        </span>
       </div>
     </Card>
   );
@@ -456,17 +629,23 @@ function Overview({
   goTo,
   setToast,
   strategy,
+  instruments,
+  closedAt,
+  dataState,
 }: {
   goTo: (page: Page) => void;
   setToast: (message: string) => void;
   strategy: StrategyKey;
+  instruments: Instrument[];
+  closedAt: number | null;
+  dataState: DataState;
 }) {
   const selectedStrategy = strategyCatalog[strategy];
   const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT'>('全部');
   const filtered = useMemo(
     () =>
       instruments.filter((item) => market === '全部' || item.signal === market),
-    [market],
+    [instruments, market],
   );
   const isV26 = strategy === 'rank-v26';
   return (
@@ -675,7 +854,12 @@ function Overview({
           </Button>
         </div>
       </div>
-      <ScanTable rows={filtered} onSelect={() => goTo('市场扫描')} />
+      <ScanTable
+        rows={filtered}
+        onSelect={() => goTo('市场扫描')}
+        closedAt={closedAt}
+        dataState={dataState}
+      />
       <section className="bottom-grid">
         <Card className="performance-card">
           <CardHeader className="card-heading-row">
@@ -773,17 +957,28 @@ function Overview({
 function ScannerPage({
   setToast,
   strategy,
+  instruments,
+  closedAt,
+  dataState,
+  refresh,
 }: {
   setToast: (message: string) => void;
   strategy: StrategyKey;
+  instruments: Instrument[];
+  closedAt: number | null;
+  dataState: DataState;
+  refresh: () => void;
 }) {
   const selectedStrategy = strategyCatalog[strategy];
   const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT'>('全部');
-  const [selected, setSelected] = useState(instruments[0]);
+  const [selectedSymbol, setSelectedSymbol] = useState(instruments[0]?.symbol);
+  const selected =
+    instruments.find((item) => item.symbol === selectedSymbol) ??
+    instruments[0];
   const filtered = useMemo(
     () =>
       instruments.filter((item) => market === '全部' || item.signal === market),
-    [market],
+    [instruments, market],
   );
   return (
     <>
@@ -808,11 +1003,7 @@ function ScannerPage({
               </button>
             ))}
           </fieldset>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setToast('扫描完成：已读取本地候选快照')}
-          >
+          <Button variant="outline" size="sm" onClick={refresh}>
             <RefreshCw size={14} /> 更新扫描
           </Button>
         </div>
@@ -827,59 +1018,62 @@ function ScannerPage({
         <ScanTable
           rows={filtered}
           onSelect={(symbol) => {
-            const next = instruments.find((item) => item.symbol === symbol);
-            if (next) setSelected(next);
+            setSelectedSymbol(symbol);
           }}
+          closedAt={closedAt}
+          dataState={dataState}
         />
-        <Card className="detail-card">
-          <CardHeader>
-            <CardTitle>{selected.name}</CardTitle>
-            <CardDescription>
-              {selected.symbol} · 当前排名 #{selected.rank}
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="detail-signal">
-              <SignalBadge signal={selected.signal} />
-              <span
-                className={
-                  selected.change > 0 ? 'change-positive' : 'change-negative'
-                }
+        {selected && (
+          <Card className="detail-card">
+            <CardHeader>
+              <CardTitle>{selected.name}</CardTitle>
+              <CardDescription>
+                {selected.symbol} · 当前排名 #{selected.rank}
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="detail-signal">
+                <SignalBadge signal={selected.signal} />
+                <span
+                  className={
+                    selected.change > 0 ? 'change-positive' : 'change-negative'
+                  }
+                >
+                  {selected.change > 0 ? '+' : ''}
+                  {selected.change.toFixed(2)}% 4H
+                </span>
+              </div>
+              <div className="detail-grid">
+                <div>
+                  <span>最新价</span>
+                  <strong>{selected.price}</strong>
+                </div>
+                <div>
+                  <span>VWAP 偏离</span>
+                  <strong>{selected.vwap}</strong>
+                </div>
+                <div>
+                  <span>ATR(14)</span>
+                  <strong>{selected.atr}</strong>
+                </div>
+                <div>
+                  <span>活跃度</span>
+                  <strong>{selected.volume}</strong>
+                </div>
+              </div>
+              <div className="detail-note">
+                <Check size={15} />
+                趋势与回踩条件已满足，等待收盘确认。
+              </div>
+              <Button
+                className="full-button"
+                onClick={() => setToast(`${selected.symbol} 已加入观察列表`)}
               >
-                {selected.change > 0 ? '+' : ''}
-                {selected.change.toFixed(2)}% 4H
-              </span>
-            </div>
-            <div className="detail-grid">
-              <div>
-                <span>最新价</span>
-                <strong>{selected.price}</strong>
-              </div>
-              <div>
-                <span>VWAP 偏离</span>
-                <strong>{selected.vwap}</strong>
-              </div>
-              <div>
-                <span>ATR(14)</span>
-                <strong>{selected.atr}</strong>
-              </div>
-              <div>
-                <span>活跃度</span>
-                <strong>{selected.volume}</strong>
-              </div>
-            </div>
-            <div className="detail-note">
-              <Check size={15} />
-              趋势与回踩条件已满足，等待收盘确认。
-            </div>
-            <Button
-              className="full-button"
-              onClick={() => setToast(`${selected.symbol} 已加入观察列表`)}
-            >
-              加入观察列表
-            </Button>
-          </CardContent>
-        </Card>
+                加入观察列表
+              </Button>
+            </CardContent>
+          </Card>
+        )}
       </div>
     </>
   );
@@ -1730,7 +1924,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
               </span>
               <div>
                 <strong>扫描完成</strong>
-                <small>6 个候选标的 · 08/27 16:00 UTC</small>
+                <small>6 个候选标的 · 每 60 秒自动更新</small>
               </div>
               <span className="event-tag">正常</span>
             </div>
@@ -1775,17 +1969,39 @@ export default function Home() {
   const [activeNav, setActiveNav] = useState<Page>('总览');
   const [selectedStrategy, setSelectedStrategy] =
     useState<StrategyKey>('rank-v26');
+  const [instruments, setInstruments] =
+    useState<Instrument[]>(initialInstruments);
+  const [closedAt, setClosedAt] = useState<number | null>(null);
+  const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
+  const [dataState, setDataState] = useState<DataState>('loading');
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState('');
-  const runRefresh = () => {
+
+  const runRefresh = useCallback(async (notify = true) => {
     setRefreshing(true);
-    setToast('正在读取最新公开行情…');
-    window.setTimeout(() => {
+    if (notify) setToast('正在读取 Gate 最新公开行情…');
+    try {
+      const result = await loadLiveInstruments();
+      setInstruments(result.rows);
+      setClosedAt(result.closedAt);
+      setLastUpdatedAt(new Date());
+      setDataState('live');
+      if (notify) setToast('扫描完成：实时行情已更新');
+    } catch (error) {
+      console.error(error);
+      setDataState('error');
+      if (notify) setToast('Gate 行情连接失败，已保留上次数据');
+    } finally {
       setRefreshing(false);
-      setToast('扫描完成：数据已更新');
-      window.setTimeout(() => setToast(''), 2200);
-    }, 900);
-  };
+      if (notify) window.setTimeout(() => setToast(''), 2600);
+    }
+  }, []);
+
+  useEffect(() => {
+    void runRefresh(false);
+    const timer = window.setInterval(() => void runRefresh(false), 60_000);
+    return () => window.clearInterval(timer);
+  }, [runRefresh]);
   const goTo = (page: Page) => {
     setActiveNav(page);
     setToast(`已打开${page}`);
@@ -1799,9 +2015,23 @@ export default function Home() {
   };
   const pageContent =
     activeNav === '总览' ? (
-      <Overview goTo={goTo} setToast={setToast} strategy={selectedStrategy} />
+      <Overview
+        goTo={goTo}
+        setToast={setToast}
+        strategy={selectedStrategy}
+        instruments={instruments}
+        closedAt={closedAt}
+        dataState={dataState}
+      />
     ) : activeNav === '市场扫描' ? (
-      <ScannerPage setToast={setToast} strategy={selectedStrategy} />
+      <ScannerPage
+        setToast={setToast}
+        strategy={selectedStrategy}
+        instruments={instruments}
+        closedAt={closedAt}
+        dataState={dataState}
+        refresh={() => void runRefresh(true)}
+      />
     ) : activeNav === '回测实验室' ? (
       <BacktestPage setToast={setToast} strategy={selectedStrategy} />
     ) : activeNav === '杠杆压力测试' ? (
@@ -1906,12 +2136,20 @@ export default function Home() {
             <div className="data-status">
               <span className="pulse-dot" />
               <span>Gate Public API</span>
-              <small>刚刚更新</small>
+              <small>
+                {dataState === 'loading'
+                  ? '连接中'
+                  : dataState === 'error'
+                    ? '连接失败'
+                    : `更新于 ${lastUpdatedAt?.toLocaleTimeString('zh-CN', {
+                        hour12: false,
+                      })}`}
+              </small>
             </div>
             <Button
               variant="outline"
               size="sm"
-              onClick={runRefresh}
+              onClick={() => void runRefresh(true)}
               disabled={refreshing}
               className="refresh-button"
             >
