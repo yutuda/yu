@@ -546,6 +546,24 @@ function formatChinaClock(date: Date | null) {
   return date ? formatChinaParts(date).split(' ')[1] : '连接中';
 }
 
+function getEntryTiming(timestamp: number, signal: Signal) {
+  if (signal === 'WAIT') {
+    return { label: '等待下一次收盘确认', tone: 'wait' as const };
+  }
+  const elapsedSeconds = Math.floor(Date.now() / 1000) - timestamp;
+  if (elapsedSeconds < 0) {
+    return { label: '待下一根 K 线开盘', tone: 'pending' as const };
+  }
+  if (elapsedSeconds < 15 * 60) {
+    const minutes = Math.max(0, Math.floor(elapsedSeconds / 60));
+    return {
+      label: `开盘后 ${minutes} 分钟 · 仅作观察`,
+      tone: minutes <= 5 ? ('active' as const) : ('late' as const),
+    };
+  }
+  return { label: '本次开盘窗口已过 · 等待新收盘', tone: 'expired' as const };
+}
+
 async function fetchGateJson<T>(path: string): Promise<T> {
   const separator = path.includes('?') ? '&' : '?';
   const response = await fetch(
@@ -1130,7 +1148,7 @@ function ScanTable({
               <th>4H 强弱</th>
               <th>信号</th>
               <th>信号分</th>
-              <th>信号时间</th>
+              <th>理论开单</th>
               <th>最新价</th>
               <th>VWAP 偏离</th>
               <th>ATR(14)</th>
@@ -1182,8 +1200,11 @@ function ScanTable({
                     {item.score}
                   </span>
                 </td>
-                <td className="muted-cell signal-time-cell">
-                  {formatChinaTimeShort(item.closedAt)}
+                <td className="signal-time-cell">
+                  <strong>{formatChinaTimeShort(item.closedAt)}</strong>
+                  <small className={`entry-status ${getEntryTiming(item.closedAt, item.signal).tone}`}>
+                    {getEntryTiming(item.closedAt, item.signal).label}
+                  </small>
                 </td>
                 <td className="mono-cell">{item.price}</td>
                 <td>
@@ -1212,7 +1233,7 @@ function ScanTable({
           <span className="pulse-dot" />{' '}
           {dataState === 'error'
             ? 'Gate 行情暂时连接失败 · 保留上次数据'
-            : `最近收盘 K 线 · ${formatChinaTime(closedAt)} · 收盘后生成信号`}
+            : `最近收盘 K 线 · ${formatChinaTime(closedAt)} · 理论开单为下一根 15m 开盘`}
         </span>
         <span>
           {scanStats.total > 0
@@ -1246,7 +1267,7 @@ function StrongestSignals({
         <div>
           <strong>最强信号 S+</strong>
           <small>
-            极端排名 + 趋势 / VWAP / 成交量一致 ·{' '}
+            理论开单 = 下一根 15m K 线开盘 ·{' '}
             {closedAt ? `最近收盘 ${formatChinaTimeShort(closedAt)}` : '等待收盘数据'}
           </small>
         </div>
@@ -1258,7 +1279,10 @@ function StrongestSignals({
               <b>{item.name}</b>
               <span>{item.signal === 'LONG' ? '强多' : '强空'}</span>
               <em>{item.score}</em>
-              <small>{formatChinaTimeShort(item.closedAt)}</small>
+              <small>
+                开单 {formatChinaTimeShort(item.closedAt)} ·{' '}
+                {getEntryTiming(item.closedAt, item.signal).label}
+              </small>
             </span>
           ))}
         </div>
@@ -1678,6 +1702,9 @@ function ScannerPage({
   const selected =
     strategyInstruments.find((item) => item.symbol === selectedSymbol) ??
     strategyInstruments[0];
+  const selectedTiming = selected
+    ? getEntryTiming(selected.closedAt, selected.signal)
+    : null;
   useEffect(() => {
     if (
       strategyInstruments.length > 0 &&
@@ -1784,8 +1811,11 @@ function ScannerPage({
                   <strong>{selected.score}/99</strong>
                 </div>
                 <div>
-                  <span>信号时间</span>
+                  <span>最佳开单时间（理论）</span>
                   <strong>{formatChinaTimeShort(selected.closedAt)} 北京</strong>
+                  <em className={`entry-status ${selectedTiming?.tone ?? 'wait'}`}>
+                    {selectedTiming?.label}
+                  </em>
                 </div>
                 <div>
                   <span>趋势确认</span>
@@ -1797,10 +1827,10 @@ function ScannerPage({
               <div className={`detail-note ${selected.strength === 'S+' ? 'elite' : ''}`}>
                 {selected.strength === 'S+' ? <Zap size={15} /> : <Check size={15} />}
                 {selected.strength === 'S+'
-                  ? 'S+ 最强信号：排名、趋势、VWAP 与成交量一致；仍需等待下一根收盘确认。'
+                  ? `S+ 最强信号：排名、趋势、VWAP 与成交量一致；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。已过开盘就等待新收盘，不追价。`
                   : selected.signal === 'WAIT'
                     ? '当前处于观察区，不生成方向性交易信号。'
-                    : '方向性条件已满足；请等待收盘确认，不代表自动开仓。'}
+                    : `方向性条件已满足；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。不代表自动开仓。`}
               </div>
               <Button
                 className="full-button"
