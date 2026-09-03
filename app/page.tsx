@@ -547,6 +547,9 @@ function formatChinaClock(date: Date | null) {
 }
 
 function getEntryTiming(timestamp: number, signal: Signal) {
+  if (!timestamp) {
+    return { label: '等待实时收盘数据', tone: 'pending' as const };
+  }
   if (signal === 'WAIT') {
     return { label: '等待下一次收盘确认', tone: 'wait' as const };
   }
