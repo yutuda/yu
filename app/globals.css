@@ -40,7 +40,7 @@ fieldset.segmented { border:0; margin:0; }
 .stress-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:17px; margin-bottom:17px; }.stress-card { border-color:#e9e2d7; background:#fffdf9; box-shadow:0 7px 22px rgba(92,75,47,.035); }.status-badge.danger { color:#a9564d; background:#f6e6e2; }.stress-metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }.stress-metrics span,.stress-metrics strong { display:block; }.stress-metrics span { color:#a19b90; font-size:10px; }.stress-metrics strong { margin-top:5px; color:#514d45; font-size:15px; letter-spacing:-.03em; }.stress-foot { display:flex; justify-content:space-between; gap:10px; padding-top:14px; margin-top:14px; border-top:1px solid #f0ece5; color:#9a948a; font-size:10px; }.stress-foot strong { color:#766044; font-family:var(--font-geist-mono),monospace; }.stress-lower { margin-bottom:0; }
 @media (max-width:760px) { .stress-grid { grid-template-columns:1fr; }.stress-metrics { grid-template-columns:repeat(2,1fr); gap:14px; } }
 /* V31 full-universe ranking and signal emphasis */
-table { min-width: 900px; }
+table { min-width: 1020px; }
 .signal-row-elite { background:linear-gradient(90deg,#fff7e7,#fffdf9 72%); box-shadow:inset 3px 0 #c98a3b; }
 .signal-row-elite:hover { background:#fff1d6 !important; }
 .signal-badge.wait { color:#918c84; background:#efeee9; }
@@ -59,6 +59,8 @@ table { min-width: 900px; }
 .elite-signal b { color:#504638; font-size:10px; }
 .elite-signal span { color:#9a6b2c; font-size:9px; font-weight:700; }
 .elite-signal em { color:#8b5e25; font-style:normal; font-family:var(--font-geist-mono),ui-monospace,monospace; font-size:9px; }
+.elite-signal small { color:#a39684; font-family:var(--font-geist-mono),ui-monospace,monospace; font-size:9px; }
+.signal-time-cell { font-family:var(--font-geist-mono),ui-monospace,monospace; font-variant-numeric:tabular-nums; }
 .elite-empty { color:#aa9b87; font-size:10px; }
 .stress-foot span:last-child { margin-left:auto; text-align:right; }
 @media (max-width:760px) { .elite-strip { align-items:flex-start; flex-direction:column; gap:10px; }.elite-strip-heading { min-width:0; }.elite-signal-list { width:100%; }.stress-foot { align-items:flex-start; flex-wrap:wrap; }.stress-foot span:last-child { margin-left:0; text-align:left; width:100%; } }

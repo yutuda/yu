@@ -72,6 +72,7 @@ type Instrument = {
   strength: SignalStrength;
   score: number;
   trend: Signal;
+  closedAt: number;
   price: string;
   atr: string;
   vwap: string;
@@ -327,6 +328,7 @@ const initialInstruments: Instrument[] = [
     strength: 'S+',
     score: 96,
     trend: 'LONG',
+    closedAt: 0,
     price: '248.70',
     atr: '7.42',
     vwap: '+1.8%',
@@ -344,6 +346,7 @@ const initialInstruments: Instrument[] = [
     strength: 'S',
     score: 84,
     trend: 'LONG',
+    closedAt: 0,
     price: '38.16',
     atr: '1.31',
     vwap: '+1.2%',
@@ -361,6 +364,7 @@ const initialInstruments: Instrument[] = [
     strength: 'A',
     score: 74,
     trend: 'LONG',
+    closedAt: 0,
     price: '35.92',
     atr: '1.22',
     vwap: '+0.9%',
@@ -378,6 +382,7 @@ const initialInstruments: Instrument[] = [
     strength: 'A',
     score: 73,
     trend: 'SHORT',
+    closedAt: 0,
     price: '104.50',
     atr: '4.48',
     vwap: '-1.1%',
@@ -395,6 +400,7 @@ const initialInstruments: Instrument[] = [
     strength: 'S',
     score: 82,
     trend: 'SHORT',
+    closedAt: 0,
     price: '152.28',
     atr: '5.76',
     vwap: '-0.8%',
@@ -412,6 +418,7 @@ const initialInstruments: Instrument[] = [
     strength: 'A',
     score: 71,
     trend: 'SHORT',
+    closedAt: 0,
     price: '176.90',
     atr: '6.15',
     vwap: '-0.6%',
@@ -508,14 +515,35 @@ function formatVolume(value: number) {
   return `$ ${value.toFixed(0)}`;
 }
 
-function formatUtcTime(timestamp: number | null) {
+function formatChinaParts(value: Date | number) {
+  const date = typeof value === 'number' ? new Date(value * 1000) : value;
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(date);
+  const values = Object.fromEntries(
+    parts
+      .filter((part) => part.type !== 'literal')
+      .map((part) => [part.type, part.value]),
+  );
+  return `${values.month}/${values.day} ${values.hour}:${values.minute}`;
+}
+
+function formatChinaTime(timestamp: number | null) {
   if (!timestamp) return '正在连接 Gate…';
-  const date = new Date(timestamp * 1000);
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  const hour = String(date.getUTCHours()).padStart(2, '0');
-  const minute = String(date.getUTCMinutes()).padStart(2, '0');
-  return `${month}/${day} ${hour}:${minute} UTC`;
+  return `${formatChinaParts(timestamp)} 北京时间`;
+}
+
+function formatChinaTimeShort(timestamp: number) {
+  return timestamp ? formatChinaParts(timestamp) : '—';
+}
+
+function formatChinaClock(date: Date | null) {
+  return date ? formatChinaParts(date).split(' ')[1] : '连接中';
 }
 
 async function fetchGateJson<T>(path: string): Promise<T> {
@@ -755,6 +783,7 @@ async function loadLiveInstruments() {
     strength: item.strength,
     score: item.score,
     trend: item.trend,
+    closedAt: item.closedAt,
     price: item.price,
     atr: item.atr,
     vwap: item.vwap,
@@ -770,7 +799,7 @@ async function loadLiveInstruments() {
       crypto: rows.filter((item) => item.assetClass === 'CRYPTO').length,
       elite: rows.filter((item) => item.strength === 'S+').length,
     },
-    closedAt: Math.min(...calculated.map((item) => item.closedAt)),
+    closedAt: Math.max(...calculated.map((item) => item.closedAt)),
   };
 }
 
@@ -1101,6 +1130,7 @@ function ScanTable({
               <th>4H 强弱</th>
               <th>信号</th>
               <th>信号分</th>
+              <th>信号时间</th>
               <th>最新价</th>
               <th>VWAP 偏离</th>
               <th>ATR(14)</th>
@@ -1152,6 +1182,9 @@ function ScanTable({
                     {item.score}
                   </span>
                 </td>
+                <td className="muted-cell signal-time-cell">
+                  {formatChinaTimeShort(item.closedAt)}
+                </td>
                 <td className="mono-cell">{item.price}</td>
                 <td>
                   <span
@@ -1179,7 +1212,7 @@ function ScanTable({
           <span className="pulse-dot" />{' '}
           {dataState === 'error'
             ? 'Gate 行情暂时连接失败 · 保留上次数据'
-            : `最后一根已收盘 K 线 · ${formatUtcTime(closedAt)}`}
+            : `最近收盘 K 线 · ${formatChinaTime(closedAt)} · 收盘后生成信号`}
         </span>
         <span>
           {scanStats.total > 0
@@ -1193,7 +1226,13 @@ function ScanTable({
   );
 }
 
-function StrongestSignals({ rows }: { rows: Instrument[] }) {
+function StrongestSignals({
+  rows,
+  closedAt,
+}: {
+  rows: Instrument[];
+  closedAt: number | null;
+}) {
   const strongest = rows
     .filter((item) => item.strength === 'S+')
     .sort((a, b) => b.score - a.score)
@@ -1206,7 +1245,10 @@ function StrongestSignals({ rows }: { rows: Instrument[] }) {
         </span>
         <div>
           <strong>最强信号 S+</strong>
-          <small>极端排名 + 趋势 / VWAP / 成交量一致</small>
+          <small>
+            极端排名 + 趋势 / VWAP / 成交量一致 ·{' '}
+            {closedAt ? `最近收盘 ${formatChinaTimeShort(closedAt)}` : '等待收盘数据'}
+          </small>
         </div>
       </div>
       {strongest.length ? (
@@ -1216,6 +1258,7 @@ function StrongestSignals({ rows }: { rows: Instrument[] }) {
               <b>{item.name}</b>
               <span>{item.signal === 'LONG' ? '强多' : '强空'}</span>
               <em>{item.score}</em>
+              <small>{formatChinaTimeShort(item.closedAt)}</small>
             </span>
           ))}
         </div>
@@ -1499,7 +1542,7 @@ function Overview({
           </Button>
         </div>
       </div>
-      <StrongestSignals rows={strategyInstruments} />
+      <StrongestSignals rows={strategyInstruments} closedAt={closedAt} />
       <ScanTable
         rows={filtered}
         onSelect={() => goTo('市场扫描')}
@@ -1684,7 +1727,7 @@ function ScannerPage({
           4 个对比标的；下面的本地候选快照仅用于观察，不等同于 Pine 回测结果。
         </div>
       )}
-      <StrongestSignals rows={strategyInstruments} />
+      <StrongestSignals rows={strategyInstruments} closedAt={closedAt} />
       <div className="scanner-layout">
         <ScanTable
           rows={filtered}
@@ -1739,6 +1782,10 @@ function ScannerPage({
                 <div>
                   <span>信号评分</span>
                   <strong>{selected.score}/99</strong>
+                </div>
+                <div>
+                  <span>信号时间</span>
+                  <strong>{formatChinaTimeShort(selected.closedAt)} 北京</strong>
                 </div>
                 <div>
                   <span>趋势确认</span>
@@ -3087,9 +3134,7 @@ export default function Home() {
                   ? '连接中'
                   : dataState === 'error'
                     ? '连接失败'
-                    : `更新于 ${lastUpdatedAt?.toLocaleTimeString('zh-CN', {
-                        hour12: false,
-                      })}`}
+                    : `更新于 ${formatChinaClock(lastUpdatedAt)} 北京`}
               </small>
             </div>
             <Button
