@@ -39,3 +39,26 @@ fieldset.segmented { border:0; margin:0; }
 .strategy-picker { display:flex; align-items:center; flex-wrap:wrap; gap:7px; margin-bottom:19px; }.strategy-picker>span { margin-right:3px; color:#9b958b; font-size:10px; font-weight:750; letter-spacing:.11em; text-transform:uppercase; }.strategy-picker button { display:inline-flex; align-items:center; gap:7px; border:1px solid #e6ded1; border-radius:8px; padding:7px 10px; color:#817a70; background:#fffdf9; cursor:pointer; font-size:10px; }.strategy-picker button:hover,.strategy-picker button.selected { color:#665035; border-color:#dfc59f; background:#fff7e9; }.strategy-picker button small { color:#aaa197; font-family:var(--font-geist-mono),monospace; }.strategy-notice { display:flex; align-items:flex-start; gap:8px; padding:12px 14px; margin:0 0 17px; border:1px solid #ecd9b9; border-radius:9px; color:#977044; background:#fbf2e4; font-size:10px; line-height:1.55; }.strategy-notice svg { flex:0 0 auto; margin-top:1px; }
 .stress-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:17px; margin-bottom:17px; }.stress-card { border-color:#e9e2d7; background:#fffdf9; box-shadow:0 7px 22px rgba(92,75,47,.035); }.status-badge.danger { color:#a9564d; background:#f6e6e2; }.stress-metrics { display:grid; grid-template-columns:repeat(4,1fr); gap:12px; }.stress-metrics span,.stress-metrics strong { display:block; }.stress-metrics span { color:#a19b90; font-size:10px; }.stress-metrics strong { margin-top:5px; color:#514d45; font-size:15px; letter-spacing:-.03em; }.stress-foot { display:flex; justify-content:space-between; gap:10px; padding-top:14px; margin-top:14px; border-top:1px solid #f0ece5; color:#9a948a; font-size:10px; }.stress-foot strong { color:#766044; font-family:var(--font-geist-mono),monospace; }.stress-lower { margin-bottom:0; }
 @media (max-width:760px) { .stress-grid { grid-template-columns:1fr; }.stress-metrics { grid-template-columns:repeat(2,1fr); gap:14px; } }
+/* V31 full-universe ranking and signal emphasis */
+table { min-width: 900px; }
+.signal-row-elite { background:linear-gradient(90deg,#fff7e7,#fffdf9 72%); box-shadow:inset 3px 0 #c98a3b; }
+.signal-row-elite:hover { background:#fff1d6 !important; }
+.signal-badge.wait { color:#918c84; background:#efeee9; }
+.signal-badge.elite { color:#8d5b1e; background:#f7dfb3; box-shadow:0 0 0 2px #f4e7cf,0 4px 10px rgba(177,117,39,.14); }
+.score-cell,.score-elite { display:inline-flex; align-items:center; justify-content:center; min-width:28px; padding:3px 5px; border-radius:5px; color:#8c877e; background:#f0eee9; font-family:var(--font-geist-mono),ui-monospace,monospace; font-size:10px; font-weight:700; }
+.score-elite { color:#8b5e25; background:#f6e4c4; }
+.detail-note.elite { color:#8c5c22; background:#fff1d6; }
+.elite-strip { display:flex; align-items:center; gap:17px; padding:12px 15px; margin:0 0 13px; border:1px solid #ecd8b5; border-radius:10px; background:linear-gradient(100deg,#fff8eb,#fffdf9); }
+.elite-strip-heading { display:flex; align-items:center; gap:9px; min-width:205px; }
+.elite-mark { display:grid; place-items:center; width:28px; height:28px; color:#9a6422; border-radius:8px; background:#f6e0b9; }
+.elite-strip-heading strong,.elite-strip-heading small { display:block; }
+.elite-strip-heading strong { color:#6b512f; font-size:11px; }
+.elite-strip-heading small { margin-top:3px; color:#a39684; font-size:9px; }
+.elite-signal-list { display:flex; flex:1; flex-wrap:wrap; gap:7px; }
+.elite-signal { display:inline-flex; align-items:center; gap:6px; padding:6px 8px; border:1px solid #f0dfc3; border-radius:7px; color:#74624b; background:#fffdf9; font-size:10px; }
+.elite-signal b { color:#504638; font-size:10px; }
+.elite-signal span { color:#9a6b2c; font-size:9px; font-weight:700; }
+.elite-signal em { color:#8b5e25; font-style:normal; font-family:var(--font-geist-mono),ui-monospace,monospace; font-size:9px; }
+.elite-empty { color:#aa9b87; font-size:10px; }
+.stress-foot span:last-child { margin-left:auto; text-align:right; }
+@media (max-width:760px) { .elite-strip { align-items:flex-start; flex-direction:column; gap:10px; }.elite-strip-heading { min-width:0; }.elite-signal-list { width:100%; }.stress-foot { align-items:flex-start; flex-wrap:wrap; }.stress-foot span:last-child { margin-left:0; text-align:left; width:100%; } }

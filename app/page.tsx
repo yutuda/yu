@@ -18,6 +18,7 @@ import {
   FlaskConical,
   Gauge,
   LayoutDashboard,
+  Minus,
   Pause,
   Play,
   RefreshCw,
@@ -31,6 +32,7 @@ import {
   TrendingDown,
   Wifi,
   X,
+  Zap,
 } from 'lucide-react';
 import {
   Area,
@@ -55,18 +57,32 @@ import {
   CardTitle,
 } from '@/components/ui/card';
 
-type Signal = 'LONG' | 'SHORT';
+type Signal = 'LONG' | 'SHORT' | 'WAIT';
+type SignalStrength = 'S+' | 'S' | 'A' | 'WATCH';
+type AssetClass = 'US_STOCK' | 'CRYPTO';
 type DataState = 'loading' | 'live' | 'error';
 type Instrument = {
   symbol: string;
   name: string;
   change: number;
   rank: number;
+  universeSize: number;
+  assetClass: AssetClass;
   signal: Signal;
+  strength: SignalStrength;
+  score: number;
+  trend: Signal;
   price: string;
   atr: string;
   vwap: string;
   volume: string;
+  volumeRatio: number;
+};
+type ScanStats = {
+  total: number;
+  stocks: number;
+  crypto: number;
+  elite: number;
 };
 type Page =
   | '总览'
@@ -75,7 +91,13 @@ type Page =
   | '杠杆压力测试'
   | '策略版本'
   | '告警中心';
-type StrategyKey = 'rank-v28' | 'rank-v27' | 'rank-v26' | 'rank-v25' | 'rank-v1';
+type StrategyKey =
+  | 'rank-v31'
+  | 'rank-v28'
+  | 'rank-v27'
+  | 'rank-v26'
+  | 'rank-v25'
+  | 'rank-v1';
 type TestedStrategyKey = Exclude<StrategyKey, 'rank-v1'>;
 
 const strategyCatalog: Record<
@@ -89,6 +111,15 @@ const strategyCatalog: Record<
     mode: string;
   }
 > = {
+  'rank-v31': {
+    name: 'Rank Pullback Balanced Extension',
+    version: 'v31',
+    source: 'Gate V31 Balanced Extension',
+    market: '美股永续 + 主流加密 · Gate Public API',
+    summary:
+      '当前主策略：1.25 ATR 追价上限、2.0 ATR 止损、2R 目标；多级强弱排名与 S+ 强信号强调。',
+    mode: '年度规则筛选通过 · 前向模拟',
+  },
   'rank-v28': {
     name: 'Rank Pullback Quality Band',
     version: 'v28',
@@ -144,6 +175,18 @@ const strategyMetrics: Record<
     exits: Array<{ name: string; value: number }>;
   }
 > = {
+  'rank-v31': {
+    trades: 191,
+    compound: '+9.96%',
+    profitFactor: '1.172',
+    winRate: '49.74%',
+    drawdown: '-9.19%',
+    exits: [
+      { name: '目标 2R', value: 17 },
+      { name: '止损 2.0 ATR', value: 39 },
+      { name: '时间退出', value: 135 },
+    ],
+  },
   'rank-v28': {
     trades: 249,
     compound: '+11.72%',
@@ -244,86 +287,195 @@ const v28AnnualValidation = {
   quarterlyProfitFactors: '1.063 / 0.916 / 1.146 / 1.328',
 };
 
+const v31AnnualValidation = {
+  period: '2025-09-02 至 2026-09-02 · 365 天 · 15 分钟',
+  source: 'Bybit USDT 永续公开 K 线代理；Gate 公开 K 线不足一年',
+  primary: {
+    basket: 'BTC / ETH / SOL / BNB / XRP / DOGE / ADA / AVAX',
+    trades: 191,
+    profitFactor: '1.172',
+    winRate: '49.74%',
+    compound: '+9.96%',
+    drawdown: '-9.19%',
+    exits: '17 目标 / 39 止损 / 135 时间退出',
+  },
+  broad: {
+    baskets: 5,
+    trades: 894,
+    profitFactor: '1.228',
+    winRate: '48.10%',
+    compound: '+114.89%',
+    drawdown: '-20.69%',
+  },
+  stress100x: {
+    liquidations: 106,
+    rate: '55.50%',
+  },
+  halfProfitFactors: '1.348 / 1.102（全篮子）；1.169 / 1.174（核心）',
+  quarterlyProfitFactors: '1.253 / 1.464 / 1.098 / 1.105（全篮子）',
+};
+
 const initialInstruments: Instrument[] = [
   {
     symbol: 'SKHYNIX_USDT',
     name: 'SK hynix',
     change: 8.42,
     rank: 1,
-    signal: 'LONG' as Signal,
+    universeSize: 8,
+    assetClass: 'US_STOCK',
+    signal: 'LONG',
+    strength: 'S+',
+    score: 96,
+    trend: 'LONG',
     price: '248.70',
     atr: '7.42',
     vwap: '+1.8%',
     volume: '¥ 12.4M',
+    volumeRatio: 1.32,
   },
   {
     symbol: 'SPCX_USDT',
     name: 'CoreWeave',
     change: 6.91,
     rank: 2,
-    signal: 'LONG' as Signal,
+    universeSize: 8,
+    assetClass: 'US_STOCK',
+    signal: 'LONG',
+    strength: 'S',
+    score: 84,
+    trend: 'LONG',
     price: '38.16',
     atr: '1.31',
     vwap: '+1.2%',
     volume: '¥ 8.7M',
+    volumeRatio: 1.18,
   },
   {
     symbol: 'SOXL_USDT',
     name: 'Direxion 3x',
     change: 5.44,
     rank: 3,
-    signal: 'LONG' as Signal,
+    universeSize: 8,
+    assetClass: 'US_STOCK',
+    signal: 'LONG',
+    strength: 'A',
+    score: 74,
+    trend: 'LONG',
     price: '35.92',
     atr: '1.22',
     vwap: '+0.9%',
     volume: '¥ 7.1M',
+    volumeRatio: 1.04,
   },
   {
     symbol: 'CRCLX_USDT',
     name: 'Circle',
     change: -4.12,
     rank: 6,
-    signal: 'SHORT' as Signal,
+    universeSize: 8,
+    assetClass: 'US_STOCK',
+    signal: 'SHORT',
+    strength: 'A',
+    score: 73,
+    trend: 'SHORT',
     price: '104.50',
     atr: '4.48',
     vwap: '-1.1%',
     volume: '¥ 5.2M',
+    volumeRatio: 1.08,
   },
   {
     symbol: 'MUU_USDT',
     name: 'Micron',
     change: -3.84,
     rank: 7,
-    signal: 'SHORT' as Signal,
+    universeSize: 8,
+    assetClass: 'US_STOCK',
+    signal: 'SHORT',
+    strength: 'S',
+    score: 82,
+    trend: 'SHORT',
     price: '152.28',
     atr: '5.76',
     vwap: '-0.8%',
     volume: '¥ 4.4M',
+    volumeRatio: 1.26,
   },
   {
     symbol: 'NVDAX_USDT',
     name: 'NVIDIA x',
     change: -2.96,
     rank: 8,
-    signal: 'SHORT' as Signal,
+    universeSize: 8,
+    assetClass: 'US_STOCK',
+    signal: 'SHORT',
+    strength: 'A',
+    score: 71,
+    trend: 'SHORT',
     price: '176.90',
     atr: '6.15',
     vwap: '-0.6%',
     volume: '¥ 3.9M',
+    volumeRatio: 0.98,
   },
 ];
 
+const initialScanStats: ScanStats = {
+  total: initialInstruments.length,
+  stocks: initialInstruments.length,
+  crypto: 0,
+  elite: initialInstruments.filter((item) => item.strength === 'S+').length,
+};
+
 const GATE_API = 'https://api.gateio.ws/api/v4/futures/usdt';
-const LIVE_UNIVERSE = [
-  ['SKHYNIX_USDT', 'SK hynix'],
-  ['SPCX_USDT', 'CoreWeave'],
-  ['SOXL_USDT', 'Direxion 3x'],
-  ['CRCLX_USDT', 'Circle'],
-  ['MUU_USDT', 'Micron'],
-  ['NVDAX_USDT', 'NVIDIA x'],
-  ['SNDK_USDT', 'SanDisk'],
-  ['SKHY_USDT', 'SK hynix x'],
+const MAINSTREAM_CRYPTO = [
+  'BTC_USDT',
+  'ETH_USDT',
+  'BNB_USDT',
+  'SOL_USDT',
+  'XRP_USDT',
+  'DOGE_USDT',
+  'ADA_USDT',
+  'AVAX_USDT',
+  'LINK_USDT',
+  'TRX_USDT',
+  'LTC_USDT',
+  'BCH_USDT',
+  'DOT_USDT',
+  'AAVE_USDT',
+  'UNI_USDT',
+  'SUI_USDT',
+  'TON_USDT',
+  'NEAR_USDT',
 ] as const;
+
+const FRIENDLY_NAMES: Record<string, string> = {
+  AAVE_USDT: 'Aave',
+  ADA_USDT: 'Cardano',
+  AVAX_USDT: 'Avalanche',
+  BCH_USDT: 'Bitcoin Cash',
+  BNB_USDT: 'BNB',
+  BTC_USDT: 'Bitcoin',
+  DOGE_USDT: 'Dogecoin',
+  DOT_USDT: 'Polkadot',
+  ETH_USDT: 'Ethereum',
+  LINK_USDT: 'Chainlink',
+  LTC_USDT: 'Litecoin',
+  NEAR_USDT: 'NEAR Protocol',
+  SUI_USDT: 'Sui',
+  SOL_USDT: 'Solana',
+  TON_USDT: 'Toncoin',
+  TRX_USDT: 'TRON',
+  UNI_USDT: 'Uniswap',
+  XRP_USDT: 'XRP',
+};
+
+type GateContract = {
+  name: string;
+  contract_type?: string;
+  status?: string;
+  in_delisting?: boolean;
+};
 
 type GateTicker = {
   contract: string;
@@ -338,7 +490,7 @@ type GateCandle = {
   h: string;
   l: string;
   c: string;
-  v: number;
+  v: number | string;
 };
 
 function formatMarketNumber(value: number) {
@@ -379,27 +531,107 @@ async function fetchGateJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function ema(values: number[], span: number) {
+  if (!values.length) return Number.NaN;
+  const alpha = 2 / (span + 1);
+  return values.reduce(
+    (previous, value) => alpha * value + (1 - alpha) * previous,
+    values[0],
+  );
+}
+
+function formatContractName(symbol: string) {
+  return (
+    FRIENDLY_NAMES[symbol] ??
+    symbol
+      .replace(/_USDT$/i, '')
+      .replace(/([a-z])([A-Z])/g, '$1 $2')
+      .replace(/_/g, ' ')
+  );
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  worker: (item: T) => Promise<R>,
+  concurrency: number,
+) {
+  const results: Array<R | undefined> = [];
+  let cursor = 0;
+  const run = async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      try {
+        results[index] = await worker(items[index]);
+      } catch (error) {
+        console.warn('跳过行情标的', items[index], error);
+      }
+    }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, items.length) }, () => run()),
+  );
+  return results.filter((value): value is R => value !== undefined);
+}
+
 async function loadLiveInstruments() {
-  const tickers = await fetchGateJson<GateTicker[]>('/tickers');
+  const [contracts, tickers] = await Promise.all([
+    fetchGateJson<GateContract[]>('/contracts'),
+    fetchGateJson<GateTicker[]>('/tickers'),
+  ]);
   const tickerMap = new Map(tickers.map((ticker) => [ticker.contract, ticker]));
   const currentCandleStart = Math.floor(Date.now() / 900_000) * 900;
 
-  const calculated = await Promise.all(
-    LIVE_UNIVERSE.map(async ([symbol, name]) => {
+  const activeContracts = contracts.filter(
+    (contract) =>
+      contract.status === 'trading' &&
+      !contract.in_delisting &&
+      Boolean(contract.name),
+  );
+  const stockContracts = activeContracts
+    .filter((contract) => contract.contract_type?.toLowerCase() === 'stocks')
+    .map((contract) => ({
+      symbol: contract.name,
+      name: formatContractName(contract.name),
+      assetClass: 'US_STOCK' as const,
+    }));
+  const activeNames = new Set(activeContracts.map((contract) => contract.name));
+  const cryptoContracts = MAINSTREAM_CRYPTO.filter((symbol) =>
+    activeNames.has(symbol),
+  ).map((symbol) => ({
+    symbol,
+    name: FRIENDLY_NAMES[symbol] ?? formatContractName(symbol),
+    assetClass: 'CRYPTO' as const,
+  }));
+  const universe = [...stockContracts, ...cryptoContracts].filter(
+    (item, index, items) =>
+      items.findIndex((candidate) => candidate.symbol === item.symbol) === index,
+  );
+  if (!universe.length) throw new Error('Gate 没有返回可扫描的美股或主流加密合约');
+
+  const calculated = await mapWithConcurrency(universe, async (instrument) => {
+      const { symbol, name, assetClass } = instrument;
       const candles = await fetchGateJson<GateCandle[]>(
-        `/candlesticks?contract=${encodeURIComponent(symbol)}&interval=15m&limit=80`,
+        `/candlesticks?contract=${encodeURIComponent(symbol)}&interval=15m&limit=220`,
       );
       const closed = candles
         .filter((candle) => Number(candle.t) < currentCandleStart)
         .sort((a, b) => Number(a.t) - Number(b.t));
-      if (closed.length < 18) throw new Error(`${symbol} K 线不足`);
+      if (closed.length < 60) throw new Error(`${symbol} K 线不足`);
 
       const latest = closed.at(-1)!;
       const reference = closed.at(-17)!;
       const recent = closed.slice(-16);
+      const closes = closed.map((candle) => Number(candle.c));
       const atrWindow = closed.slice(-15);
-      const trueRanges = atrWindow.slice(1).map((candle, index) => {
-        const previousClose = Number(atrWindow[index].c);
+      const trueRanges = atrWindow.map((candle, index) => {
+        const previousClose = Number(
+          index === 0 ? closed.at(-16)!.c : atrWindow[index - 1].c,
+        );
         return Math.max(
           Number(candle.h) - Number(candle.l),
           Math.abs(Number(candle.h) - previousClose),
@@ -428,39 +660,116 @@ async function loadLiveInstruments() {
       const volume24h = Number(
         ticker?.volume_24h_quote || ticker?.volume_24h_settle || 0,
       );
+      const volumeMa =
+        closed
+          .slice(-31, -1)
+          .reduce((sum, candle) => sum + (Number(candle.v) || 0), 0) / 30;
+      const volumeRatio = volumeMa > 0 ? Number(latest.v) / volumeMa : 0;
+      const ema20 = ema(closes, 20);
+      const ema50 = ema(closes, 50);
+      const ema50Previous = ema(closes.slice(0, -8), 50);
+      const ema50Slope = ema50Previous ? ema50 / ema50Previous - 1 : 0;
+      const trend: Signal =
+        latestClose > ema20 && ema20 > ema50 && ema50Slope > 0
+          ? 'LONG'
+          : latestClose < ema20 && ema20 < ema50 && ema50Slope < 0
+            ? 'SHORT'
+            : 'WAIT';
 
       return {
         symbol,
         name,
+        assetClass,
         change: (latestClose / Number(reference.c) - 1) * 100,
         price: formatMarketNumber(lastPrice),
         atr: formatMarketNumber(atr),
         vwap: `${lastPrice >= vwap ? '+' : ''}${((lastPrice / vwap - 1) * 100).toFixed(2)}%`,
         volume: formatVolume(volume24h),
         closedAt: Number(latest.t) + 900,
+        vwapValue: vwap,
+        volumeRatio,
+        trend,
       };
-    }),
-  );
+    }, 6);
 
+  if (!calculated.length) throw new Error('所有行情标的读取失败');
+  const signalBand = Math.min(5, Math.max(3, Math.floor(calculated.length / 4)));
   const ranked = calculated
     .sort((a, b) => b.change - a.change)
-    .map((item, index) => ({ ...item, rank: index + 1 }));
-  const rows: Instrument[] = ranked
-    .filter((item) => item.rank <= 3 || item.rank > ranked.length - 3)
-    .map((item) => ({
-      symbol: item.symbol,
-      name: item.name,
-      change: item.change,
-      rank: item.rank,
-      signal: item.rank <= 3 ? 'LONG' : 'SHORT',
-      price: item.price,
-      atr: item.atr,
-      vwap: item.vwap,
-      volume: item.volume,
-    }));
+    .map((item, index, all) => {
+      const rank = index + 1;
+      const signal: Signal =
+        rank <= signalBand
+          ? 'LONG'
+          : rank > all.length - signalBand
+            ? 'SHORT'
+            : 'WAIT';
+      const edge =
+        all.length > 1
+          ? Math.abs((all.length + 1 - 2 * rank) / (all.length - 1))
+          : 1;
+      const trendAligned = signal !== 'WAIT' && item.trend === signal;
+      const vwapAligned =
+        signal === 'LONG'
+          ? Number(item.price.replace(/,/g, '')) >= item.vwapValue
+          : signal === 'SHORT'
+            ? Number(item.price.replace(/,/g, '')) <= item.vwapValue
+            : false;
+      const score = Math.round(
+        clamp(
+          35 +
+            edge * 30 +
+            Math.min(Math.abs(item.change) * 2, 18) +
+            (trendAligned ? 18 : 0) +
+            (vwapAligned ? 10 : 0) +
+            (item.volumeRatio >= 1 ? 7 : 0),
+          1,
+          99,
+        ),
+      );
+      const strength: SignalStrength =
+        signal === 'WAIT'
+          ? 'WATCH'
+          : score >= 88
+            ? 'S+'
+            : score >= 75
+              ? 'S'
+              : 'A';
+      return {
+        ...item,
+        rank,
+        universeSize: all.length,
+        signal,
+        strength,
+        score,
+      };
+    });
+  const rows: Instrument[] = ranked.map((item) => ({
+    symbol: item.symbol,
+    name: item.name,
+    change: item.change,
+    rank: item.rank,
+    universeSize: item.universeSize,
+    assetClass: item.assetClass,
+    signal: item.signal,
+    strength: item.strength,
+    score: item.score,
+    trend: item.trend,
+    price: item.price,
+    atr: item.atr,
+    vwap: item.vwap,
+    volume: item.volume,
+    volumeRatio: item.volumeRatio,
+  }));
 
   return {
     rows,
+    stats: {
+      total: rows.length,
+      stocks: rows.filter((item) => item.assetClass === 'US_STOCK').length,
+      crypto: rows.filter((item) => item.assetClass === 'CRYPTO').length,
+      elite: rows.filter((item) => item.strength === 'S+').length,
+    },
     closedAt: Math.min(...calculated.map((item) => item.closedAt)),
   };
 }
@@ -468,46 +777,50 @@ async function loadLiveInstruments() {
 const leverageTests = [
   {
     key: 'leverage-20x',
-    label: '美股永续 · 20x',
-    universe: 'v25 修正持仓区间',
-    trades: 434,
-    average: '+0.9957%',
-    profitFactor: '1.1118',
-    liquidation: '0.23%',
-    foldRange: '0.93–1.19',
+    label: '核心策略 · 20x',
+    universe: 'V31 核心八币种 · 零成本',
+    trades: 191,
+    average: '+1.0753%',
+    profitFactor: '1.1716',
+    liquidation: '0.00%',
+    compound: '-60.06%',
+    foldRange: '近似爆仓 0 / 191',
     tone: 'warning',
   },
   {
     key: 'leverage-40x',
-    label: '美股永续 · 40x',
-    universe: 'v25 修正持仓区间',
-    trades: 434,
-    average: '-0.6410%',
-    profitFactor: '0.9662',
-    liquidation: '7.14%',
-    foldRange: '0.87–1.13',
+    label: '核心策略 · 40x',
+    universe: 'V31 核心八币种 · 零成本',
+    trades: 191,
+    average: '+1.9484%',
+    profitFactor: '1.1530',
+    liquidation: '1.05%',
+    compound: '-100.00%',
+    foldRange: '近似爆仓 2 / 191',
     tone: 'negative',
   },
   {
     key: 'leverage-60x',
-    label: '美股永续 · 60x',
-    universe: 'v25 修正持仓区间',
-    trades: 434,
-    average: '-5.6127%',
-    profitFactor: '0.8115',
-    liquidation: '19.82%',
-    foldRange: '0.71–0.97',
+    label: '核心策略 · 60x',
+    universe: 'V31 核心八币种 · 零成本',
+    trades: 191,
+    average: '+0.0536%',
+    profitFactor: '1.0025',
+    liquidation: '9.95%',
+    compound: '-100.00%',
+    foldRange: '近似爆仓 19 / 191',
     tone: 'negative',
   },
   {
     key: 'crypto-100x',
     label: '主流虚拟货币 · 100x',
-    universe: 'BTC / ETH / BNB / SOL / XRP',
-    trades: 451,
-    average: '-13.9016%',
-    profitFactor: '0.5680',
-    liquidation: '23.06%',
-    foldRange: '0.38–0.97',
+    universe: 'V31 核心八币种 · 零成本',
+    trades: 191,
+    average: '-33.1053%',
+    profitFactor: '0.4193',
+    liquidation: '55.50%',
+    compound: '-100.00%',
+    foldRange: '近似爆仓 106 / 191',
     tone: 'negative',
   },
 ];
@@ -539,6 +852,14 @@ const equityV28 = [
   { time: '2026/03', value: 106.80 },
   { time: '2026/06', value: 106.27 },
   { time: '2026/09', value: 111.72 },
+];
+
+const equityV31 = [
+  { time: '2025/09', value: 100 },
+  { time: '2025/12', value: 103.99 },
+  { time: '2026/03', value: 104.73 },
+  { time: '2026/06', value: 99.47 },
+  { time: '2026/09', value: 109.96 },
 ];
 
 const performance = [
@@ -655,6 +976,29 @@ const strategyRulesV28 = [
   },
 ];
 
+const strategyRulesV31 = [
+  {
+    title: '全市场横截面排名',
+    body: '动态读取 Gate 正在交易的全部 stocks 类美股永续，并合并预设的主流加密合约；按最近 16 根 15 分钟 K 线收益率排序。',
+    icon: Gauge,
+  },
+  {
+    title: '五级信号分层',
+    body: '展示全量排名，前/后 5 名生成 LONG / SHORT；S+、S、A 与 WATCH 分别反映排名、趋势、VWAP 和成交量的一致性。',
+    icon: Sparkles,
+  },
+  {
+    title: 'S+ 最强信号强调',
+    body: '只有排名处于极端、EMA 趋势与 VWAP 同向且成交量不弱时进入 S+；页面用高亮条、金色标记和分数突出。',
+    icon: Zap,
+  },
+  {
+    title: 'V31 风险规则',
+    body: '最大追价距离 1.25 ATR，初始止损 2.0 ATR，目标 2R，最多持仓 8 根 15 分钟 K 线；只读，不自动下单。',
+    icon: ShieldCheck,
+  },
+];
+
 function MetricCard({
   label,
   value,
@@ -684,17 +1028,29 @@ function MetricCard({
   );
 }
 
-function SignalBadge({ signal }: { signal: Signal }) {
+function SignalBadge({
+  signal,
+  strength,
+}: {
+  signal: Signal;
+  strength?: SignalStrength;
+}) {
+  const elite = strength === 'S+';
   return (
     <Badge
-      className={signal === 'LONG' ? 'signal-badge long' : 'signal-badge short'}
+      className={`signal-badge ${
+        signal === 'LONG' ? 'long' : signal === 'SHORT' ? 'short' : 'wait'
+      } ${elite ? 'elite' : ''}`}
     >
-      {signal === 'LONG' ? (
+      {signal === 'WAIT' ? (
+        <Minus size={13} />
+      ) : signal === 'LONG' ? (
         <ArrowUpRight size={13} />
       ) : (
         <ArrowDownRight size={13} />
       )}
-      {signal}
+      {signal === 'WAIT' ? 'WATCH' : `${strength ?? 'A'} ${signal}`}
+      {elite && <Sparkles size={11} />}
     </Badge>
   );
 }
@@ -727,11 +1083,13 @@ function ScanTable({
   onSelect,
   closedAt,
   dataState,
+  scanStats,
 }: {
   rows: Instrument[];
   onSelect: (symbol: string) => void;
   closedAt: number | null;
   dataState: DataState;
+  scanStats: ScanStats;
 }) {
   return (
     <Card className="table-card">
@@ -742,6 +1100,7 @@ function ScanTable({
               <th>标的</th>
               <th>4H 强弱</th>
               <th>信号</th>
+              <th>信号分</th>
               <th>最新价</th>
               <th>VWAP 偏离</th>
               <th>ATR(14)</th>
@@ -751,7 +1110,10 @@ function ScanTable({
           </thead>
           <tbody>
             {rows.map((item) => (
-              <tr key={item.symbol}>
+              <tr
+                key={item.symbol}
+                className={item.strength === 'S+' ? 'signal-row-elite' : ''}
+              >
                 <td>
                   <button
                     className="symbol-button"
@@ -763,7 +1125,10 @@ function ScanTable({
                     </span>
                     <span>
                       <strong>{item.name}</strong>
-                      <small>{item.symbol}</small>
+                      <small>
+                        {item.assetClass === 'US_STOCK' ? '美股永续' : '主流加密'} ·{' '}
+                        {item.symbol}
+                      </small>
                     </span>
                   </button>
                 </td>
@@ -778,7 +1143,14 @@ function ScanTable({
                   </span>
                 </td>
                 <td>
-                  <SignalBadge signal={item.signal} />
+                  <SignalBadge signal={item.signal} strength={item.strength} />
+                </td>
+                <td>
+                  <span
+                    className={item.strength === 'S+' ? 'score-elite' : 'score-cell'}
+                  >
+                    {item.score}
+                  </span>
                 </td>
                 <td className="mono-cell">{item.price}</td>
                 <td>
@@ -810,10 +1182,47 @@ function ScanTable({
             : `最后一根已收盘 K 线 · ${formatUtcTime(closedAt)}`}
         </span>
         <span>
-          {dataState === 'live' ? '每 60 秒自动更新' : '点击标的查看详情'}
+          {scanStats.total > 0
+            ? `已扫描 ${scanStats.total} 个 · 美股 ${scanStats.stocks} · 加密 ${scanStats.crypto} · S+ ${scanStats.elite}`
+            : dataState === 'live'
+              ? '正在整理扫描范围'
+              : '点击标的查看详情'}
         </span>
       </div>
     </Card>
+  );
+}
+
+function StrongestSignals({ rows }: { rows: Instrument[] }) {
+  const strongest = rows
+    .filter((item) => item.strength === 'S+')
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 4);
+  return (
+    <div className="elite-strip">
+      <div className="elite-strip-heading">
+        <span className="elite-mark">
+          <Zap size={14} />
+        </span>
+        <div>
+          <strong>最强信号 S+</strong>
+          <small>极端排名 + 趋势 / VWAP / 成交量一致</small>
+        </div>
+      </div>
+      {strongest.length ? (
+        <div className="elite-signal-list">
+          {strongest.map((item) => (
+            <span className="elite-signal" key={item.symbol}>
+              <b>{item.name}</b>
+              <span>{item.signal === 'LONG' ? '强多' : '强空'}</span>
+              <em>{item.score}</em>
+            </span>
+          ))}
+        </div>
+      ) : (
+        <span className="elite-empty">当前没有同时满足全部 S+ 条件的标的</span>
+      )}
+    </div>
   );
 }
 
@@ -824,6 +1233,7 @@ function Overview({
   instruments,
   closedAt,
   dataState,
+  scanStats,
 }: {
   goTo: (page: Page) => void;
   setToast: (message: string) => void;
@@ -831,6 +1241,7 @@ function Overview({
   instruments: Instrument[];
   closedAt: number | null;
   dataState: DataState;
+  scanStats: ScanStats;
 }) {
   const selectedStrategy = strategyCatalog[strategy];
   const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT'>('全部');
@@ -852,18 +1263,23 @@ function Overview({
     strategy === 'rank-v1' ? 'rank-v26' : strategy;
   const metrics = strategyMetrics[testedKey];
   const chartData =
-    testedKey === 'rank-v28'
-      ? equityV28
-      : testedKey === 'rank-v27'
-        ? equityV27
-        : equityV26;
+    testedKey === 'rank-v31'
+      ? equityV31
+      : testedKey === 'rank-v28'
+        ? equityV28
+        : testedKey === 'rank-v27'
+          ? equityV27
+          : equityV26;
+  const isV31 = strategy === 'rank-v31';
   const isV28 = strategy === 'rank-v28';
   const isV27 = strategy === 'rank-v27';
-  const validationWindow = isV28
-    ? `${v28AnnualValidation.period} · ${v28AnnualValidation.primary.trades} 笔`
-    : isV27
-      ? `${v27AnnualValidation.period} · ${v27AnnualValidation.primary.trades} 笔`
-    : '约 41 天 · 零成本 1x 压力视图';
+  const validationWindow = isV31
+    ? `${v31AnnualValidation.period} · ${v31AnnualValidation.primary.trades} 核心 / ${v31AnnualValidation.broad.trades} 全篮子`
+    : isV28
+      ? `${v28AnnualValidation.period} · ${v28AnnualValidation.primary.trades} 笔`
+      : isV27
+        ? `${v27AnnualValidation.period} · ${v27AnnualValidation.primary.trades} 笔`
+        : '约 41 天 · 零成本 1x 压力视图';
   return (
     <>
       <section className="hero-row">
@@ -891,11 +1307,13 @@ function Overview({
         <div>
           <strong>研究提示</strong>
           <span>
-            {isV28
-              ? 'v28 年度独立验证：核心八币种 249 笔的 PF 为 1.161、胜率 46.99%；跨篮子 1,212 笔 PF 为 1.168，但仍需样本外复核。'
-              : isV27
-                ? 'v27 年度独立验证：核心八币种 862 笔的 PF 为 0.964，未达到研究通过标准；100x 零成本压力也出现 50.70% 的近似爆仓率。'
-              : '现有结果用于研究对照；高杠杆压力结果不等于可直接开仓。'}
+            {isV31
+              ? 'V31 已替换为主策略：扫描全部可发现的美股永续与主流加密，并把信号分为 S+、S、A、WATCH；年度规则筛选通过，但仍需前向数据确认。'
+              : isV28
+                ? 'v28 年度独立验证：核心八币种 249 笔的 PF 为 1.161、胜率 46.99%；跨篮子 1,212 笔 PF 为 1.168，但仍需样本外复核。'
+                : isV27
+                  ? 'v27 年度独立验证：核心八币种 862 笔的 PF 为 0.964，未达到研究通过标准；100x 零成本压力也出现 50.70% 的近似爆仓率。'
+                  : '现有结果用于研究对照；高杠杆压力结果不等于可直接开仓。'}
           </span>
         </div>
         <button aria-label="查看风险说明" onClick={() => goTo('策略版本')}>
@@ -945,7 +1363,7 @@ function Overview({
               <CardTitle>策略净值曲线</CardTitle>
               <CardDescription>
                 {selectedStrategy.name} {selectedStrategy.version} · 15 分钟 ·
-                {isV28 || isV27
+                {isV31 || isV28 || isV27
                   ? '年度主测试 · 季度端点 · 零成本'
                   : '约 41 天零成本回放'}
               </CardDescription>
@@ -1025,7 +1443,7 @@ function Overview({
               </span>
               <div>
                 <strong>历史 K 线数据</strong>
-                <small>8 个合约 · 1000 根</small>
+                <small>全量美股永续 + 主流币 · 220 根15m</small>
               </div>
               <span className="health-ok">完整</span>
             </div>
@@ -1058,11 +1476,11 @@ function Overview({
             <span className="orange-bar" />
             实时扫描
           </div>
-          <h3>强弱排名与信号</h3>
+          <h3>全市场强弱排名与分级信号</h3>
         </div>
         <div className="section-actions">
           <fieldset className="segmented" aria-label="信号筛选">
-            {(['全部', 'LONG', 'SHORT'] as const).map((option) => (
+            {(['全部', 'LONG', 'SHORT', 'WAIT'] as const).map((option) => (
               <button
                 key={option}
                 onClick={() => setMarket(option)}
@@ -1081,11 +1499,13 @@ function Overview({
           </Button>
         </div>
       </div>
+      <StrongestSignals rows={strategyInstruments} />
       <ScanTable
         rows={filtered}
         onSelect={() => goTo('市场扫描')}
         closedAt={closedAt}
         dataState={dataState}
+        scanStats={scanStats}
       />
       <section className="bottom-grid">
         <Card className="performance-card">
@@ -1188,6 +1608,7 @@ function ScannerPage({
   closedAt,
   dataState,
   refresh,
+  scanStats,
 }: {
   setToast: (message: string) => void;
   strategy: StrategyKey;
@@ -1195,9 +1616,12 @@ function ScannerPage({
   closedAt: number | null;
   dataState: DataState;
   refresh: () => void;
+  scanStats: ScanStats;
 }) {
   const selectedStrategy = strategyCatalog[strategy];
-  const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT'>('全部');
+  const [market, setMarket] = useState<
+    '全部' | 'LONG' | 'SHORT' | 'WAIT'
+  >('全部');
   const strategyInstruments = useMemo(
     () =>
       strategy === 'rank-v27' || strategy === 'rank-v28'
@@ -1211,6 +1635,14 @@ function ScannerPage({
   const selected =
     strategyInstruments.find((item) => item.symbol === selectedSymbol) ??
     strategyInstruments[0];
+  useEffect(() => {
+    if (
+      strategyInstruments.length > 0 &&
+      !strategyInstruments.some((item) => item.symbol === selectedSymbol)
+    ) {
+      setSelectedSymbol(strategyInstruments[0].symbol);
+    }
+  }, [selectedSymbol, strategyInstruments]);
   const filtered = useMemo(
     () =>
       strategyInstruments.filter(
@@ -1231,7 +1663,7 @@ function ScannerPage({
         </div>
         <div className="section-actions">
           <fieldset className="segmented" aria-label="市场方向">
-            {(['全部', 'LONG', 'SHORT'] as const).map((option) => (
+            {(['全部', 'LONG', 'SHORT', 'WAIT'] as const).map((option) => (
               <button
                 key={option}
                 onClick={() => setMarket(option)}
@@ -1252,6 +1684,7 @@ function ScannerPage({
           4 个对比标的；下面的本地候选快照仅用于观察，不等同于 Pine 回测结果。
         </div>
       )}
+      <StrongestSignals rows={strategyInstruments} />
       <div className="scanner-layout">
         <ScanTable
           rows={filtered}
@@ -1260,18 +1693,23 @@ function ScannerPage({
           }}
           closedAt={closedAt}
           dataState={dataState}
+          scanStats={scanStats}
         />
         {selected && (
           <Card className="detail-card">
             <CardHeader>
               <CardTitle>{selected.name}</CardTitle>
               <CardDescription>
-                {selected.symbol} · 当前排名 #{selected.rank}
+                {selected.assetClass === 'US_STOCK' ? '美股永续' : '主流加密'} ·{' '}
+                {selected.symbol} · 当前排名 #{selected.rank}/{selected.universeSize}
               </CardDescription>
             </CardHeader>
             <CardContent>
               <div className="detail-signal">
-                <SignalBadge signal={selected.signal} />
+                <SignalBadge
+                  signal={selected.signal}
+                  strength={selected.strength}
+                />
                 <span
                   className={
                     selected.change > 0 ? 'change-positive' : 'change-negative'
@@ -1298,10 +1736,24 @@ function ScannerPage({
                   <span>活跃度</span>
                   <strong>{selected.volume}</strong>
                 </div>
+                <div>
+                  <span>信号评分</span>
+                  <strong>{selected.score}/99</strong>
+                </div>
+                <div>
+                  <span>趋势确认</span>
+                  <strong>
+                    {selected.trend === 'WAIT' ? '未确认' : selected.trend}
+                  </strong>
+                </div>
               </div>
-              <div className="detail-note">
-                <Check size={15} />
-                趋势与回踩条件已满足，等待收盘确认。
+              <div className={`detail-note ${selected.strength === 'S+' ? 'elite' : ''}`}>
+                {selected.strength === 'S+' ? <Zap size={15} /> : <Check size={15} />}
+                {selected.strength === 'S+'
+                  ? 'S+ 最强信号：排名、趋势、VWAP 与成交量一致；仍需等待下一根收盘确认。'
+                  : selected.signal === 'WAIT'
+                    ? '当前处于观察区，不生成方向性交易信号。'
+                    : '方向性条件已满足；请等待收盘确认，不代表自动开仓。'}
               </div>
               <Button
                 className="full-button"
@@ -1330,11 +1782,14 @@ function GateBacktestPage({
   const metrics = strategyMetrics[strategy];
   const currentExitBreakdown = metrics.exits;
   const chartData =
-    strategy === 'rank-v28'
-      ? equityV28
-      : strategy === 'rank-v27'
-        ? equityV27
-        : equityV26;
+    strategy === 'rank-v31'
+      ? equityV31
+      : strategy === 'rank-v28'
+        ? equityV28
+        : strategy === 'rank-v27'
+          ? equityV27
+          : equityV26;
+  const isV31 = strategy === 'rank-v31';
   const isV28 = strategy === 'rank-v28';
   const isV27 = strategy === 'rank-v27';
   const runBacktest = () => {
@@ -1359,8 +1814,10 @@ function GateBacktestPage({
               {selected.name} {selected.version}
             </CardTitle>
             <CardDescription>
-              {isV28
-                ? '年度独立验证中 · 仅保留为观察研究'
+              {isV31
+                ? '年度规则筛选通过 · 仅进入前向模拟'
+                : isV28
+                  ? '年度独立验证中 · 仅保留为观察研究'
                 : isV27
                   ? '年度独立验证未通过 · 仅保留为观察研究'
                   : selected.mode}
@@ -1384,9 +1841,9 @@ function GateBacktestPage({
               </div>
               <div>
                 <label htmlFor="backtest-stop">止损 ATR</label>
-                <select id="backtest-stop" defaultValue="1.5">
-                  <option>1.5 ATR</option>
+                <select id="backtest-stop" defaultValue={isV31 ? '2.0' : '1.5'}>
                   <option>2.0 ATR</option>
+                  <option>1.5 ATR</option>
                 </select>
               </div>
               <div>
@@ -1441,13 +1898,19 @@ function GateBacktestPage({
             <div>
               <CardTitle>结果摘要</CardTitle>
               <CardDescription>
-                {isV28 || isV27
+                {isV31 || isV28 || isV27
                   ? `${metrics.trades} 笔交易 · 一年期核心八币种 · 零成本`
                   : `${metrics.trades} 笔交易 · 约 41 天零成本回放`}
               </CardDescription>
             </div>
             <Badge className="status-badge warning">
-              {isV28 ? '样本外复核中' : isV27 ? '年度未通过' : '需要复核'}
+              {isV31
+                ? '前向模拟'
+                : isV28
+                  ? '样本外复核中'
+                  : isV27
+                    ? '年度未通过'
+                    : '需要复核'}
             </Badge>
           </CardHeader>
           <CardContent>
@@ -1486,7 +1949,15 @@ function GateBacktestPage({
                   tick={{ fill: '#918d84', fontSize: 10 }}
                 />
                 <YAxis
-                  domain={isV28 ? [95, 115] : isV27 ? [75, 105] : [95, 125]}
+                  domain={
+                    isV31
+                      ? [95, 115]
+                      : isV28
+                        ? [95, 115]
+                        : isV27
+                          ? [75, 105]
+                          : [95, 125]
+                  }
                   axisLine={false}
                   tickLine={false}
                   tick={{ fill: '#918d84', fontSize: 10 }}
@@ -1510,13 +1981,21 @@ function GateBacktestPage({
           </CardContent>
         </Card>
       </div>
-      {(isV28 || isV27) && (
+      {(isV31 || isV28 || isV27) && (
         <Card className="exit-card">
           <CardHeader>
             <CardTitle>年度独立验证 · 结论</CardTitle>
             <CardDescription>
-              {isV28 ? v28AnnualValidation.period : v27AnnualValidation.period}；
-              {isV28 ? v28AnnualValidation.source : v27AnnualValidation.source}
+              {isV31
+                ? v31AnnualValidation.period
+                : isV28
+                  ? v28AnnualValidation.period
+                  : v27AnnualValidation.period}；
+              {isV31
+                ? v31AnnualValidation.source
+                : isV28
+                  ? v28AnnualValidation.source
+                  : v27AnnualValidation.source}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -1524,47 +2003,64 @@ function GateBacktestPage({
               <div>
                 <span>主测试</span>
                 <strong>
-                  {isV28
-                    ? v28AnnualValidation.primary.trades
-                    : v27AnnualValidation.primary.trades}{' '}
+                  {isV31
+                    ? v31AnnualValidation.primary.trades
+                    : isV28
+                      ? v28AnnualValidation.primary.trades
+                      : v27AnnualValidation.primary.trades}{' '}
                   笔
                 </strong>
               </div>
               <div>
                 <span>全篮子复核</span>
                 <strong>
-                  {isV28
-                    ? v28AnnualValidation.broad.trades
-                    : v27AnnualValidation.broad.trades}{' '}
+                  {isV31
+                    ? v31AnnualValidation.broad.trades
+                    : isV28
+                      ? v28AnnualValidation.broad.trades
+                      : v27AnnualValidation.broad.trades}{' '}
                   笔
                 </strong>
               </div>
               <div>
                 <span>全篮子 PF</span>
                 <strong>
-                  {isV28
-                    ? v28AnnualValidation.broad.profitFactor
-                    : v27AnnualValidation.broad.profitFactor}
+                  {isV31
+                    ? v31AnnualValidation.broad.profitFactor
+                    : isV28
+                      ? v28AnnualValidation.broad.profitFactor
+                      : v27AnnualValidation.broad.profitFactor}
                 </strong>
               </div>
               <div>
                 <span>100x 近似爆仓</span>
                 <strong className="negative-text">
-                  {isV28
-                    ? v28AnnualValidation.stress100x.liquidations
-                    : v27AnnualValidation.stress100x.liquidations}{' '}
-                  / {isV28 ? v28AnnualValidation.stress100x.rate : v27AnnualValidation.stress100x.rate}
+                  {isV31
+                    ? v31AnnualValidation.stress100x.liquidations
+                    : isV28
+                      ? v28AnnualValidation.stress100x.liquidations
+                      : v27AnnualValidation.stress100x.liquidations}{' '}
+                  /{' '}
+                  {isV31
+                    ? v31AnnualValidation.stress100x.rate
+                    : isV28
+                      ? v28AnnualValidation.stress100x.rate
+                      : v27AnnualValidation.stress100x.rate}
                 </strong>
               </div>
             </div>
             <div className="cost-warning">
               <AlertTriangle size={15} /> 四个时间段 PF：
-              {isV28
-                ? v28AnnualValidation.quarterlyProfitFactors
-                : v27AnnualValidation.quarterlyProfitFactors}。
-              {isV28
-                ? 'v28 的整体指标优于 v27，但核心样本量较小，且仍未完成独立样本外验证；不应按当前规则开仓或使用 100x。'
-                : '核心主测试与跨篮子复核均未显示稳定正期望；不应按当前规则开仓或使用 100x。'}
+              {isV31
+                ? v31AnnualValidation.quarterlyProfitFactors
+                : isV28
+                  ? v28AnnualValidation.quarterlyProfitFactors
+                  : v27AnnualValidation.quarterlyProfitFactors}。
+              {isV31
+                ? 'V31 的规则门槛通过，但参数与本次复核使用同一年度样本；核心第三季度 PF 仅 0.613，必须先做新的前向模拟。'
+                : isV28
+                  ? 'v28 的整体指标优于 v27，但核心样本量较小，且仍未完成独立样本外验证；不应按当前规则开仓或使用 100x。'
+                  : '核心主测试与跨篮子复核均未显示稳定正期望；不应按当前规则开仓或使用 100x。'}
             </div>
           </CardContent>
         </Card>
@@ -1789,15 +2285,15 @@ function LeverageStressPage() {
       <SectionHeading
         kicker="Leverage stress test"
         title="杠杆压力测试"
-        description="旧版 v25 短窗口压力数据与最新 v27 年度验证并列展示；均按要求忽略手续费、滑点与资金费率。"
+        description="V31 核心八币种的零成本近似压力测试；均按要求忽略手续费、滑点与资金费率。"
       />
       <div className="risk-banner">
         <AlertTriangle size={17} />
         <div>
           <strong>研究结论</strong>
           <span>
-            旧版 v25 短窗口中 20x 相对最低风险，但 v27 年度核心样本在 100x
-            零成本压力下仍有 50.70% 的近似爆仓率；当前任何高杠杆方案都不通过。
+            V31 在 20x、40x、60x、100x 下的近似爆仓率为 0%、1.05%、9.95% 和
+            55.50%；100x 明确不通过，20x 也只是压力测试上限，不是开仓建议。
           </span>
         </div>
         <ShieldCheck size={17} />
@@ -1854,8 +2350,9 @@ function LeverageStressPage() {
                 </div>
               </div>
               <div className="stress-foot">
-                <span>4 折利润因子范围</span>
-                <strong>{test.foldRange}</strong>
+                <span>序列复合收益</span>
+                <strong>{test.compound}</strong>
+                <span>{test.foldRange}</span>
               </div>
             </CardContent>
           </Card>
@@ -1866,7 +2363,7 @@ function LeverageStressPage() {
           <CardHeader>
             <CardTitle>建议提取</CardTitle>
             <CardDescription>
-              旧版短窗口压力数据，已由 v27 年度验证补充复核
+              V31 年度核心八币种，隔离保证金近似模型
             </CardDescription>
           </CardHeader>
           <CardContent className="rule-list">
@@ -1878,8 +2375,7 @@ function LeverageStressPage() {
               <div>
                 <strong>20x 仍只作为压力上限</strong>
                 <p>
-                  修正模型后 20x 总体利润因子为 1.1118，但最差折叠只有
-                  0.9337；不能据此直接开实盘仓位。
+                  V31 在 20x 下无近似爆仓，但按逐笔序列复合仍为 -60.06%；不能据此直接开实盘仓位。
                 </p>
               </div>
             </div>
@@ -1891,9 +2387,8 @@ function LeverageStressPage() {
               <div>
                 <strong>杠杆越高，爆仓越集中</strong>
                 <p>
-                  旧版 v25 测试中，20x、40x、60x、100x 的近似爆仓占比分别为
-                  0.23%、7.14%、19.82% 和 23.06%；最新 v27 年度核心样本的 100x
-                  近似爆仓率更高，为 50.70%。
+                  V31 年度核心样本中，20x、40x、60x、100x 的近似爆仓占比分别为
+                  0%、1.05%、9.95% 和 55.50%；杠杆放大的是尾部风险，不是稳定性。
                 </p>
               </div>
             </div>
@@ -1905,9 +2400,8 @@ function LeverageStressPage() {
               <div>
                 <strong>年度验证未通过，先停止部署</strong>
                 <p>
-                  v27 已完成一年期、862 笔的主测试且 PF 低于
-                  1。下一步不应加杠杆，
-                  应重新设计入场与退出逻辑，再做成本敏感性和新的样本外验证。
+                  V31 的规则筛选虽然通过，但核心第三季度 PF 仅 0.613，且参数选择与复核仍在同一年度；
+                  下一步应冻结参数，先做新的前向模拟和成本敏感性测试。
                 </p>
               </div>
             </div>
@@ -1926,7 +2420,7 @@ function LeverageStressPage() {
               </div>
               <div>
                 <dt>历史窗口</dt>
-                <dd>4 × 1000 根</dd>
+                <dd>全年回测 · 实时220根</dd>
               </div>
               <div>
                 <dt>手续费</dt>
@@ -1991,16 +2485,19 @@ function StrategyPage({
         <TradingViewBacktest setToast={setToast} />
       </>
     );
+  const isV31 = strategy === 'rank-v31';
   const isV28 = strategy === 'rank-v28';
   const isV27 = strategy === 'rank-v27';
   const isV26 = strategy === 'rank-v26';
-  const rules = isV28
-    ? strategyRulesV28
-    : isV27
-      ? strategyRulesV27
-      : isV26
-        ? strategyRulesV26
-        : strategyRulesV25;
+  const rules = isV31
+    ? strategyRulesV31
+    : isV28
+      ? strategyRulesV28
+      : isV27
+        ? strategyRulesV27
+        : isV26
+          ? strategyRulesV26
+          : strategyRulesV25;
   const selected = strategyCatalog[strategy];
   return (
     <>
@@ -2009,38 +2506,44 @@ function StrategyPage({
         kicker="Strategy registry"
         title="策略版本"
         description={
-          isV28
-            ? 'v28 是基于 v27 诊断结果独立生成的质量带版本，年度代理数据已有改善，但核心样本量仍需扩大。'
-            : isV27
-              ? 'v27 的短样本表现较好，但年度独立验证没有通过；当前仅作为规则研究保留。'
-            : isV26
-              ? 'v26 已完成与 v25 的同数据对照，作为宽松候选保留。'
-              : 'v25 作为旧版基线保留，用于比较过滤规则和风险变化。'
+          isV31
+            ? 'v31 已替换为当前主策略：扫描全部可发现的美股永续与主流加密，并把强弱信号分层突出；年度规则筛选通过，仍需前向模拟。'
+            : isV28
+              ? 'v28 是基于 v27 诊断结果独立生成的质量带版本，年度代理数据已有改善，但核心样本量仍需扩大。'
+              : isV27
+                ? 'v27 的短样本表现较好，但年度独立验证没有通过；当前仅作为规则研究保留。'
+                : isV26
+                  ? 'v26 已完成与 v25 的同数据对照，作为宽松候选保留。'
+                  : 'v25 作为旧版基线保留，用于比较过滤规则和风险变化。'
         }
       />
       <div className="strategy-hero">
         <div>
           <div className="version-row">
             <Badge className="version-badge">
-              {isV28
-                ? 'v28 · QUALITY BAND'
+              {isV31
+                ? 'v31 · BALANCED EXTENSION'
+                : isV28
+                  ? 'v28 · QUALITY BAND'
                 : isV27
                   ? 'v27 · PRECISION'
                   : isV26
                     ? 'v26 · CANDIDATE'
                     : 'v25 · BASELINE'}
             </Badge>
-            <span className="muted-label">Gate USDT Perpetuals</span>
+            <span className="muted-label">Gate stocks + mainstream crypto</span>
           </div>
           <h2>{selected.name}</h2>
           <p>
-            {isV28
-              ? '在 v27 基础上生成的独立策略：保持前后两名和原退出规则，只把 ADX 收窄至 15–25、成交量比收窄至 1.0–1.4。核心八币种一年期 PF 1.161、胜率 46.99%，目前仍只用于观察。'
-              : isV27
-                ? '在 v26 基础上只保留最强和最弱前两名，并限定成交量、ADX 与 ATR。短样本改善未迁移到一年期验证：核心八币种 PF 0.964、胜率 42.00%，因此不具备部署条件。'
-              : isV26
-                ? '在横截面排名基础上增加趋势方向、VWAP 同侧和最大追价距离过滤，信号收盘确认后于下一根 15 分钟 K 线开盘模拟成交。'
-                : '用横截面强弱排名寻找趋势中的回踩延续，信号收盘确认，下一根 15 分钟 K 线开盘模拟成交。'}
+            {isV31
+              ? '在 V28 质量带基础上，最大追价距离收紧至 1.25 ATR、初始止损放宽至 2.0 ATR。扫描结果按排名、趋势、VWAP 和成交量综合成 S+ / S / A / WATCH，S+ 只作为研究优先级标记。'
+              : isV28
+                ? '在 v27 基础上生成的独立策略：保持前后两名和原退出规则，只把 ADX 收窄至 15–25、成交量比收窄至 1.0–1.4。核心八币种一年期 PF 1.161、胜率 46.99%，目前仍只用于观察。'
+                : isV27
+                  ? '在 v26 基础上只保留最强和最弱前两名，并限定成交量、ADX 与 ATR。短样本改善未迁移到一年期验证：核心八币种 PF 0.964、胜率 42.00%，因此不具备部署条件。'
+                  : isV26
+                    ? '在横截面排名基础上增加趋势方向、VWAP 同侧和最大追价距离过滤，信号收盘确认后于下一根 15 分钟 K 线开盘模拟成交。'
+                    : '用横截面强弱排名寻找趋势中的回踩延续，信号收盘确认，下一根 15 分钟 K 线开盘模拟成交。'}
           </p>
         </div>
         <Button
@@ -2049,7 +2552,15 @@ function StrategyPage({
           }
         >
           <Check size={15} />{' '}
-          {isV28 ? '样本外复核中' : isV27 ? '仅观察' : isV26 ? '研究候选' : '对照版本'}
+          {isV31
+            ? '前向模拟'
+            : isV28
+              ? '样本外复核中'
+              : isV27
+                ? '仅观察'
+                : isV26
+                  ? '研究候选'
+                  : '对照版本'}
         </Button>
       </div>
       <div className="strategy-layout">
@@ -2058,8 +2569,10 @@ function StrategyPage({
             <CardTitle>信号规则</CardTitle>
             <CardDescription>
               来自{' '}
-              {isV28
-                ? 'Gate_V28_Quality_Band'
+              {isV31
+                ? 'Gate_V31_Balanced_Extension'
+                : isV28
+                  ? 'Gate_V28_Quality_Band'
                 : isV27
                   ? 'Gate_V27_Precision_Filter'
                   : isV26
@@ -2086,8 +2599,10 @@ function StrategyPage({
           <CardHeader>
             <CardTitle>参数快照</CardTitle>
             <CardDescription>
-              {isV28
-                ? 'V28Config · quality-band'
+              {isV31
+                ? 'V31Config · balanced-extension'
+                : isV28
+                  ? 'V28Config · quality-band'
                 : isV27
                   ? 'V27Config · precision'
                   : isV26
@@ -2107,7 +2622,7 @@ function StrategyPage({
               </div>
               <div>
                 <dt>ATR</dt>
-                <dd>14 · 止损 1.5x</dd>
+                <dd>{isV31 ? '14 · 止损 2.0x' : '14 · 止损 1.5x'}</dd>
               </div>
               <div>
                 <dt>目标</dt>
@@ -2119,17 +2634,33 @@ function StrategyPage({
               </div>
               <div>
                 <dt>排名数量</dt>
-                <dd>{isV27 || isV28 ? 'Top / Bottom 2' : 'Top / Bottom 3'}</dd>
+                <dd>
+                  {isV31 ? 'Top / Bottom 5（S+ 优先）' : isV27 || isV28 ? 'Top / Bottom 2' : 'Top / Bottom 3'}
+                </dd>
               </div>
-              {(isV27 || isV28) && (
+              {(isV31 || isV27 || isV28) && (
                 <>
                   <div>
                     <dt>成交量比例</dt>
-                    <dd>{isV28 ? '1.0–1.4x' : '1.0–2.0x'}</dd>
+                    <dd>{isV31 || isV28 ? '1.0–1.4x' : '1.0–2.0x'}</dd>
                   </div>
                   <div>
                     <dt>质量上限</dt>
-                    <dd>{isV28 ? 'ADX 15–25 · ATR ≤ 2%' : 'ADX ≤ 40 · ATR ≤ 2%'}</dd>
+                    <dd>
+                      {isV31 || isV28 ? 'ADX 15–25 · ATR ≤ 2%' : 'ADX ≤ 40 · ATR ≤ 2%'}
+                    </dd>
+                  </div>
+                </>
+              )}
+              {isV31 && (
+                <>
+                  <div>
+                    <dt>追价上限</dt>
+                    <dd>1.25 ATR</dd>
+                  </div>
+                  <div>
+                    <dt>信号层级</dt>
+                    <dd>S+ / S / A / WATCH</dd>
                   </div>
                 </>
               )}
@@ -2137,7 +2668,7 @@ function StrategyPage({
                 <dt>最多持仓</dt>
                 <dd>8 根 K 线</dd>
               </div>
-              {(isV26 || isV27 || isV28) && (
+              {(isV26 || isV27 || isV28 || isV31) && (
                 <div>
                   <dt>单笔风险</dt>
                   <dd>0.5% · 杠杆上限 10x</dd>
@@ -2169,13 +2700,23 @@ function StrategyPage({
           <div className="history-row active">
             <span className="history-dot" />
             <div>
+              <strong>v31 · Rank Pullback Balanced Extension</strong>
+              <small>
+                当前主策略 · 191 笔核心 / 894 笔全篮子 · PF 1.172 / 1.228 · 核心胜率 49.74% · 最大回撤 -9.19%
+              </small>
+            </div>
+            <Badge className="status-badge success">前向模拟</Badge>
+          </div>
+          <div className="history-row">
+            <span className="history-dot muted" />
+            <div>
               <strong>v28 · Rank Pullback Quality Band</strong>
               <small>
                 年度代理验证 · 249 笔核心 / 1,212 笔全篮子 · PF 1.161 · 胜率
                 46.99% · 最大回撤 -9.64%
               </small>
             </div>
-            <Badge className="status-badge warning">复核中</Badge>
+            <Badge className="status-badge warning">历史对照</Badge>
           </div>
           <div className="history-row">
             <span className="history-dot muted" />
@@ -2348,9 +2889,10 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
 export default function Home() {
   const [activeNav, setActiveNav] = useState<Page>('总览');
   const [selectedStrategy, setSelectedStrategy] =
-    useState<StrategyKey>('rank-v28');
+    useState<StrategyKey>('rank-v31');
   const [instruments, setInstruments] =
     useState<Instrument[]>(initialInstruments);
+  const [scanStats, setScanStats] = useState<ScanStats>(initialScanStats);
   const [closedAt, setClosedAt] = useState<number | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
   const [dataState, setDataState] = useState<DataState>('loading');
@@ -2363,6 +2905,7 @@ export default function Home() {
     try {
       const result = await loadLiveInstruments();
       setInstruments(result.rows);
+      setScanStats(result.stats);
       setClosedAt(result.closedAt);
       setLastUpdatedAt(new Date());
       setDataState('live');
@@ -2402,6 +2945,7 @@ export default function Home() {
         instruments={instruments}
         closedAt={closedAt}
         dataState={dataState}
+        scanStats={scanStats}
       />
     ) : activeNav === '市场扫描' ? (
       <ScannerPage
@@ -2411,6 +2955,7 @@ export default function Home() {
         closedAt={closedAt}
         dataState={dataState}
         refresh={() => void runRefresh(true)}
+        scanStats={scanStats}
       />
     ) : activeNav === '回测实验室' ? (
       <BacktestPage setToast={setToast} strategy={selectedStrategy} />
@@ -2455,6 +3000,13 @@ export default function Home() {
         <div className="sidebar-divider" />
         <div className="sidebar-section-label">策略库</div>
         <div className="asset-list">
+          <button
+            className={`asset-item ${selectedStrategy === 'rank-v31' ? 'selected' : ''}`}
+            onClick={() => chooseStrategy('rank-v31')}
+          >
+            <span className="asset-dot amber" />
+            Rank Pullback Balanced Extension <span className="asset-version">v31</span>
+          </button>
           <button
             className={`asset-item ${selectedStrategy === 'rank-v28' ? 'selected' : ''}`}
             onClick={() => chooseStrategy('rank-v28')}
@@ -2563,7 +3115,7 @@ export default function Home() {
         <div className="content-wrap">
           {pageContent}
           <footer className="page-footer">
-            <span>Gate Quant Lab · v0.2 research preview</span>
+            <span>Gate Quant Lab · V31 research preview</span>
             <span>
               <ShieldCheck size={14} /> 不构成投资建议
             </span>
