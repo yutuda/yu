@@ -1,0 +1,35 @@
+{
+  "scenario": {
+    "key": "crypto-100x",
+    "label": "主流虚拟货币 · 100x",
+    "leverage": 100,
+    "universe": "mainstream_crypto"
+  },
+  "strategy": {
+    "interval": "15m",
+    "candle_limit": 1000,
+    "max_symbols": 8,
+    "top_n": 3,
+    "rank_lookback_bars": 16,
+    "atr_period": 14,
+    "stop_atr": 1.5,
+    "target_r": 2.0,
+    "max_holding_bars": 8,
+    "min_activity": 1000000,
+    "max_spread_pct": 0.05
+  },
+  "cost_model": {
+    "taker_fee_bps_per_side": 0.0,
+    "slippage_bps_per_side": 0.0,
+    "funding_bps_per_8h": 0.0,
+    "maintenance_margin_rate": 0.005,
+    "liquidation_fee_buffer": 0.001
+  },
+  "symbols": [
+    "BTC_USDT",
+    "ETH_USDT",
+    "BNB_USDT",
+    "SOL_USDT",
+    "XRP_USDT"
+  ]
+}

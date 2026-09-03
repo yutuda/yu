@@ -1,0 +1,6 @@
+scenario,leverage,trades,win_rate_pct,average_net_return_pct,median_net_return_pct,profit_factor,compound_return_pct,max_drawdown_pct,liquidation_rate_pct,liquidations,long_average_net_pct,short_average_net_pct,p05_trade_pct,p95_trade_pct
+美股永续 · 20x,20,431,44.55,-2.6278,-1.6352,0.7863,-100.0,-100.0,5.57,24,-2.2159,-3.1603,-100.0,55.3819
+美股永续 · 40x,40,431,42.92,-8.4436,-4.531,0.6766,-100.0,-100.0,19.72,85,-6.8558,-10.4958,-100.0,101.6562
+美股永续 · 60x,60,431,39.68,-14.9073,-10.9859,0.6036,-100.0,-100.0,33.18,143,-11.9712,-18.7024,-100.0,130.2595
+主流虚拟货币 · 100x,100,445,34.16,-27.0322,-20.3607,0.3896,-100.0,-100.0,40.0,178,-28.5324,-25.4559,-100.0,90.8314
+
