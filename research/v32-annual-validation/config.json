@@ -1,0 +1,14 @@
+{
+  "name": "Closed-Candle Multi-Timeframe Runner",
+  "version": "v32",
+  "rank": "Top / Bottom 2 by six closed 4H bars (24H)",
+  "regime": "closed 4H EMA50 / EMA200 + slope + DI + ADX >= 18",
+  "setup": "1H trend plus recent pullback near 1H EMA20",
+  "trigger": "15m VWAP / ADX / volume / breakout / max 1 ATR extension",
+  "initial_stop": "max(2.0 ATR15m, 1.25 ATR1H)",
+  "partial_exits": "25% at 1R; 25% at 2R; runner moves to breakeven after TP1 and trails 3 ATR on closed 4H structure",
+  "stale_exit": "32 15m bars without TP1",
+  "max_holding": "672 15m bars (7 days)",
+  "research_only": true,
+  "automatic_orders": false
+}

@@ -1,0 +1,43 @@
+{
+  "decision": {
+    "rule_screen": "hold",
+    "promotion": "research_hold",
+    "reason": "至少一个预先声明的样本量、总体 PF 或前后半年稳定性门槛未通过；保留为研究候选，不作为实盘规则。",
+    "gates": {
+      "broad_at_least_300_trades": true,
+      "broad_profit_factor_at_least_1_15": false,
+      "broad_each_half_at_least_75_trades": true,
+      "broad_first_half_pf_at_least_1_05": false,
+      "broad_second_half_pf_at_least_1_05": true,
+      "core_each_half_at_least_20_trades": true,
+      "core_first_half_pf_at_least_1_00": false,
+      "core_second_half_pf_at_least_1_00": true
+    }
+  },
+  "methodology": {
+    "period": "2025-09-02 to 2026-09-02, 365 days",
+    "base_interval": "15m; resampled closed 1H and closed 4H context",
+    "source": "Bybit V5 public linear USDT perpetual kline proxy",
+    "costs_ignored": true,
+    "research_only": true,
+    "lookahead_control": "Higher-timeframe OHLC values are joined only at or after their close timestamp."
+  },
+  "core": {
+    "trades": 93,
+    "win_rate_pct": 55.91,
+    "profit_factor": 0.8489,
+    "compound_return_pct": -7.8043,
+    "max_drawdown_pct": -18.6973,
+    "first_half": { "trades": 54, "profit_factor": 0.7346 },
+    "second_half": { "trades": 39, "profit_factor": 1.0597 }
+  },
+  "broad": {
+    "trades": 475,
+    "win_rate_pct": 54.74,
+    "profit_factor": 1.0764,
+    "compound_return_pct": 13.8463,
+    "max_drawdown_pct": -30.7813,
+    "first_half": { "trades": 245, "profit_factor": 1.0346 },
+    "second_half": { "trades": 230, "profit_factor": 1.1247 }
+  }
+}
