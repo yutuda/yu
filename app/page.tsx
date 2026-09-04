@@ -84,6 +84,7 @@ type ScanStats = {
   stocks: number;
   crypto: number;
   elite: number;
+  excluded: number;
 };
 type Page =
   | '总览'
@@ -116,9 +117,9 @@ const strategyCatalog: Record<
     name: 'Rank Pullback Balanced Extension',
     version: 'v31',
     source: 'Gate V31 Balanced Extension',
-    market: '美股永续 + 主流加密 · Gate Public API',
+    market: '流动性合格美股永续 + 主流加密 · Gate Public API',
     summary:
-      '当前主策略：1.25 ATR 追价上限、2.0 ATR 止损、2R 目标；多级强弱排名与 S+ 强信号强调。',
+      '当前主策略：不合格流动性合约直接剔除；1.25 ATR 追价上限、2.0 ATR 止损、2R 目标。',
     mode: '年度规则筛选通过 · 前向模拟',
   },
   'rank-v28': {
@@ -432,9 +433,12 @@ const initialScanStats: ScanStats = {
   stocks: initialInstruments.length,
   crypto: 0,
   elite: initialInstruments.filter((item) => item.strength === 'S+').length,
+  excluded: 0,
 };
 
 const GATE_API = 'https://api.gateio.ws/api/v4/futures/usdt';
+const MIN_LIQUIDITY_24H_QUOTE = 1_000_000;
+const MAX_LIQUIDITY_SPREAD_PCT = 0.3;
 const MAINSTREAM_CRYPTO = [
   'BTC_USDT',
   'ETH_USDT',
@@ -489,6 +493,8 @@ type GateTicker = {
   last: string;
   volume_24h_quote?: string;
   volume_24h_settle?: string;
+  highest_bid?: string;
+  lowest_ask?: string;
 };
 
 type GateCandle = {
@@ -584,6 +590,24 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+function getLiquiditySnapshot(ticker?: GateTicker) {
+  const volume24h = Number(
+    ticker?.volume_24h_quote || ticker?.volume_24h_settle || 0,
+  );
+  const bid = Number(ticker?.highest_bid || 0);
+  const ask = Number(ticker?.lowest_ask || 0);
+  const midpoint = (bid + ask) / 2;
+  const spreadPct =
+    midpoint > 0 && ask >= bid ? ((ask - bid) / midpoint) * 100 : Infinity;
+  return {
+    volume24h,
+    spreadPct,
+    qualified:
+      volume24h >= MIN_LIQUIDITY_24H_QUOTE &&
+      spreadPct <= MAX_LIQUIDITY_SPREAD_PCT,
+  };
+}
+
 function ema(values: number[], span: number) {
   if (!values.length) return Number.NaN;
   const alpha = 2 / (span + 1);
@@ -641,7 +665,7 @@ async function loadLiveInstruments() {
       !contract.in_delisting &&
       Boolean(contract.name),
   );
-  const stockContracts = activeContracts
+  const stockCandidates = activeContracts
     .filter((contract) => contract.contract_type?.toLowerCase() === 'stocks')
     .map((contract) => ({
       symbol: contract.name,
@@ -649,18 +673,24 @@ async function loadLiveInstruments() {
       assetClass: 'US_STOCK' as const,
     }));
   const activeNames = new Set(activeContracts.map((contract) => contract.name));
-  const cryptoContracts = MAINSTREAM_CRYPTO.filter((symbol) =>
+  const cryptoCandidates = MAINSTREAM_CRYPTO.filter((symbol) =>
     activeNames.has(symbol),
   ).map((symbol) => ({
     symbol,
     name: FRIENDLY_NAMES[symbol] ?? formatContractName(symbol),
     assetClass: 'CRYPTO' as const,
   }));
-  const universe = [...stockContracts, ...cryptoContracts].filter(
+  const candidates = [...stockCandidates, ...cryptoCandidates].filter(
     (item, index, items) =>
       items.findIndex((candidate) => candidate.symbol === item.symbol) === index,
   );
-  if (!universe.length) throw new Error('Gate 没有返回可扫描的美股或主流加密合约');
+  const universe = candidates.filter((item) =>
+    getLiquiditySnapshot(tickerMap.get(item.symbol)).qualified,
+  );
+  const excluded = candidates.length - universe.length;
+  if (!universe.length) {
+    throw new Error('Gate 没有返回符合基础流动性要求的合约');
+  }
 
   const calculated = await mapWithConcurrency(universe, async (instrument) => {
       const { symbol, name, assetClass } = instrument;
@@ -706,9 +736,7 @@ async function loadLiveInstruments() {
         : latestClose;
       const ticker = tickerMap.get(symbol);
       const lastPrice = Number(ticker?.last || latestClose);
-      const volume24h = Number(
-        ticker?.volume_24h_quote || ticker?.volume_24h_settle || 0,
-      );
+      const { volume24h } = getLiquiditySnapshot(ticker);
       const volumeMa =
         closed
           .slice(-31, -1)
@@ -819,6 +847,7 @@ async function loadLiveInstruments() {
       stocks: rows.filter((item) => item.assetClass === 'US_STOCK').length,
       crypto: rows.filter((item) => item.assetClass === 'CRYPTO').length,
       elite: rows.filter((item) => item.strength === 'S+').length,
+      excluded,
     },
     closedAt: Math.max(...calculated.map((item) => item.closedAt)),
   };
@@ -1028,8 +1057,8 @@ const strategyRulesV28 = [
 
 const strategyRulesV31 = [
   {
-    title: '全市场横截面排名',
-    body: '动态读取 Gate 正在交易的全部 stocks 类美股永续，并合并预设的主流加密合约；按最近 16 根 15 分钟 K 线收益率排序。',
+    title: '流动性合格池排名',
+    body: '先剔除 24 小时成交额低于 100 万 USDT 或买卖价差超过 0.30% 的合约，再按最近 16 根 15 分钟 K 线收益率排序。',
     icon: Gauge,
   },
   {
@@ -1240,7 +1269,7 @@ function ScanTable({
         </span>
         <span>
           {scanStats.total > 0
-            ? `已扫描 ${scanStats.total} 个 · 美股 ${scanStats.stocks} · 加密 ${scanStats.crypto} · S+ ${scanStats.elite}`
+            ? `合格 ${scanStats.total} 个 · 已剔除 ${scanStats.excluded} 个 · 美股 ${scanStats.stocks} · 加密 ${scanStats.crypto} · S+ ${scanStats.elite}`
             : dataState === 'live'
               ? '正在整理扫描范围'
               : '点击标的查看详情'}
@@ -1378,7 +1407,7 @@ function Overview({
           <strong>研究提示</strong>
           <span>
             {isV31
-              ? 'V31 已替换为主策略：扫描全部可发现的美股永续与主流加密，并把信号分为 S+、S、A、WATCH；年度规则筛选通过，但仍需前向数据确认。'
+              ? 'V31 已替换为主策略：低于 100 万 USDT 成交额或价差超过 0.30% 的合约直接剔除，合格池信号分为 S+、S、A、WATCH；仍需前向数据确认。'
               : isV28
                 ? 'v28 年度独立验证：核心八币种 249 笔的 PF 为 1.161、胜率 46.99%；跨篮子 1,212 笔 PF 为 1.168，但仍需样本外复核。'
                 : isV27
@@ -1513,7 +1542,7 @@ function Overview({
               </span>
               <div>
                 <strong>历史 K 线数据</strong>
-                <small>全量美股永续 + 主流币 · 220 根15m</small>
+                <small>流动性合格池 · 220 根15m</small>
               </div>
               <span className="health-ok">完整</span>
             </div>
@@ -1546,7 +1575,7 @@ function Overview({
             <span className="orange-bar" />
             实时扫描
           </div>
-          <h3>全市场强弱排名与分级信号</h3>
+          <h3>流动性合格池强弱排名与分级信号</h3>
         </div>
         <div className="section-actions">
           <fieldset className="segmented" aria-label="信号筛选">
@@ -2587,7 +2616,7 @@ function StrategyPage({
         title="策略版本"
         description={
           isV31
-            ? 'v31 已替换为当前主策略：扫描全部可发现的美股永续与主流加密，并把强弱信号分层突出；年度规则筛选通过，仍需前向模拟。'
+            ? 'v31 已替换为当前主策略：不合格流动性合约直接剔除，只对合格美股永续与主流加密进行排名；年度规则筛选通过，仍需前向模拟。'
             : isV28
               ? 'v28 是基于 v27 诊断结果独立生成的质量带版本，年度代理数据已有改善，但核心样本量仍需扩大。'
               : isV27
@@ -2616,7 +2645,7 @@ function StrategyPage({
           <h2>{selected.name}</h2>
           <p>
             {isV31
-              ? '在 V28 质量带基础上，最大追价距离收紧至 1.25 ATR、初始止损放宽至 2.0 ATR。扫描结果按排名、趋势、VWAP 和成交量综合成 S+ / S / A / WATCH，S+ 只作为研究优先级标记。'
+              ? '在 V28 质量带基础上增加流动性硬过滤：24 小时成交额至少 100 万 USDT、买卖价差不超过 0.30%。合格结果再按排名、趋势、VWAP 和成交量综合成 S+ / S / A / WATCH。'
               : isV28
                 ? '在 v27 基础上生成的独立策略：保持前后两名和原退出规则，只把 ADX 收窄至 15–25、成交量比收窄至 1.0–1.4。核心八币种一年期 PF 1.161、胜率 46.99%，目前仍只用于观察。'
                 : isV27

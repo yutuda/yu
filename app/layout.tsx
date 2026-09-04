@@ -7,7 +7,7 @@ const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin']
 
 export const metadata: Metadata = {
   title: 'Gate Quant Lab · V31 全市场扫描',
-  description: '扫描 Gate 全部可发现的美股永续与主流加密合约，提供强弱排名、分级信号、回测与风险研究。',
+  description: '剔除低流动性合约后扫描 Gate 美股永续与主流加密合约，提供强弱排名、分级信号、回测与风险研究。',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
