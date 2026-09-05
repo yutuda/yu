@@ -1,0 +1,37 @@
+{
+  "version": "V32.1",
+  "status": "frozen_forward_observation",
+  "period": "2025-09-02T15:30:00Z/2026-09-02T15:30:00Z",
+  "costs_ignored": true,
+  "config_changes_from_v32": {
+    "minimum_volume_ratio": 1.0,
+    "tp1": "40% at 1R",
+    "tp2": "30% at 2R",
+    "runner": "30% with closed-4H 3 ATR trail"
+  },
+  "core": {
+    "trades": 76,
+    "win_rate_pct": 59.21,
+    "raw_profit_factor": 1.2184,
+    "equal_risk_profit_factor": 1.573,
+    "fixed_risk_0_5pct_return_pct": 7.6099,
+    "fixed_risk_0_5pct_max_drawdown_pct": -3.2253,
+    "half_year_equal_risk_profit_factors": [1.0876, 2.3659]
+  },
+  "broad": {
+    "trades": 359,
+    "trade_retention_pct": 75.58,
+    "win_rate_pct": 55.99,
+    "raw_profit_factor": 1.2316,
+    "equal_risk_profit_factor": 1.3568,
+    "fixed_risk_0_5pct_return_pct": 27.2435,
+    "fixed_risk_0_5pct_max_drawdown_pct": -9.6775,
+    "half_year_equal_risk_profit_factors": [1.3813, 1.3332],
+    "quarterly_equal_risk_profit_factors": [1.3247, 1.4636, 1.724, 1.0661]
+  },
+  "limitations": [
+    "The annual sample was used for candidate selection and is not untouched out-of-sample evidence.",
+    "Fees, slippage, funding, liquidations, and Gate-specific fills are excluded.",
+    "Pooled signals can overlap and are not a concurrent portfolio equity curve."
+  ]
+}

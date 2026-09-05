@@ -78,7 +78,7 @@ type Instrument = {
   vwap: string;
   volume: string;
   volumeRatio: number;
-  timeframe?: 'V31' | 'V32';
+  timeframe?: 'V31' | 'V32' | 'V32.1';
   regimeClosedAt?: number;
   setup?: string;
   stop?: string;
@@ -101,6 +101,7 @@ type Page =
   | '策略版本'
   | '告警中心';
 type StrategyKey =
+  | 'rank-v321'
   | 'rank-v32'
   | 'rank-v31'
   | 'rank-v28'
@@ -121,6 +122,15 @@ const strategyCatalog: Record<
     mode: string;
   }
 > = {
+  'rank-v321': {
+    name: 'Participation-Confirmed MTF Runner',
+    version: 'v32.1',
+    source: 'Gate V32.1 PF Balanced',
+    market: '流动性合格美股永续 + 主流加密 · Gate Public API',
+    summary:
+      '冻结候选：保留已收盘 4H / 1H / 15m 架构，要求触发量达到均量，并采用 40% / 30% / 30% 分批退出。',
+    mode: '当前约束通过 · 冻结前向观察',
+  },
   'rank-v32': {
     name: 'Closed-Candle Multi-Timeframe Runner',
     version: 'v32',
@@ -194,6 +204,18 @@ const strategyMetrics: Record<
     exits: Array<{ name: string; value: number }>;
   }
 > = {
+  'rank-v321': {
+    trades: 76,
+    compound: '+7.61%',
+    profitFactor: '1.573 / 1.218',
+    winRate: '59.21%',
+    drawdown: '-3.23%',
+    exits: [
+      { name: 'TP1 / TP2', value: 56 },
+      { name: '止损', value: 63 },
+      { name: '8h 无进展', value: 13 },
+    ],
+  },
   'rank-v32': {
     trades: 93,
     compound: '-7.80%',
@@ -372,6 +394,37 @@ const v32AnnualValidation = {
     broad: '前半年 PF 1.035（245 笔） / 后半年 PF 1.125（230 笔）',
   },
   quarterlyProfitFactors: '0.936 / 1.173 / 1.302 / 0.978（全篮子）',
+};
+
+const v321AnnualValidation = {
+  period: '2025-09-02 至 2026-09-02 · 365 天 · 15m / 已收盘 1H、4H',
+  source: 'Bybit USDT 永续公开 K 线代理；Gate 公开 K 线不足一年',
+  decision: 'PASS · 仅通过当前候选约束，冻结前向观察',
+  primary: {
+    basket: 'BTC / ETH / SOL / BNB / XRP / DOGE / ADA / AVAX',
+    trades: 76,
+    rawProfitFactor: '1.218',
+    riskProfitFactor: '1.573',
+    winRate: '59.21%',
+    fixedRiskReturn: '+7.61%',
+    fixedRiskDrawdown: '-3.23%',
+    exits: '40 次 TP1 / 16 次 TP2 / 63 次止损 / 13 次 8h 无进展退出',
+  },
+  broad: {
+    baskets: 5,
+    trades: 359,
+    rawProfitFactor: '1.232',
+    riskProfitFactor: '1.357',
+    winRate: '55.99%',
+    fixedRiskReturn: '+27.24%',
+    fixedRiskDrawdown: '-9.68%',
+    retained: '75.58%',
+  },
+  halfYear: {
+    core: '前半年等风险 PF 1.088（44 笔） / 后半年 2.366（32 笔）',
+    broad: '前半年等风险 PF 1.381（186 笔） / 后半年 1.333（173 笔）',
+  },
+  quarterlyRiskProfitFactors: '1.325 / 1.464 / 1.724 / 1.066（全篮子）',
 };
 
 const initialInstruments: Instrument[] = [
@@ -1108,7 +1161,8 @@ function hasRecentCandle(
   return false;
 }
 
-async function loadLiveInstrumentsV32() {
+async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
+  const isV321 = strategy === 'rank-v321';
   const { tickerMap, universe, excluded } = await loadEligibleUniverse();
   const calculated = await mapWithConcurrency(
     universe,
@@ -1186,7 +1240,7 @@ async function loadLiveInstrumentsV32() {
       const quality =
         tf15.adx >= 15 &&
         tf15.atr / latest15m.close <= 0.04 &&
-        tf15.volumeRatio >= 0.8;
+        tf15.volumeRatio >= (isV321 ? 1 : 0.8);
       const recentLongPullback = hasRecentCandle(
         candles15m,
         3,
@@ -1303,9 +1357,9 @@ async function loadLiveInstrumentsV32() {
         vwap: item.vwap,
         volume: item.volume,
         volumeRatio: item.volumeRatio,
-        timeframe: 'V32' as const,
+        timeframe: isV321 ? ('V32.1' as const) : ('V32' as const),
         regimeClosedAt: item.regimeClosedAt,
-        setup: `4H ${item.h4Long || item.h4Short ? '通过' : '未通过'} · 1H ${item.h1Long || item.h1Short ? '通过' : '未通过'} · 15m ${item.triggerLong || item.triggerShort ? '触发' : '等待'}`,
+        setup: `4H ${item.h4Long || item.h4Short ? '通过' : '未通过'} · 1H ${item.h1Long || item.h1Short ? '通过' : '未通过'} · 15m ${item.triggerLong || item.triggerShort ? '触发' : '等待'} · 量比 ${item.volumeRatio.toFixed(2)}x`,
         stop: Number.isFinite(stop) ? formatMarketNumber(stop) : undefined,
         tp1: Number.isFinite(tp1) ? formatMarketNumber(tp1) : undefined,
         tp2: Number.isFinite(tp2) ? formatMarketNumber(tp2) : undefined,
@@ -1327,8 +1381,8 @@ async function loadLiveInstrumentsV32() {
 }
 
 async function loadLiveInstruments(strategy: StrategyKey) {
-  return strategy === 'rank-v32'
-    ? loadLiveInstrumentsV32()
+  return strategy === 'rank-v32' || strategy === 'rank-v321'
+    ? loadLiveInstrumentsV32(strategy)
     : loadLiveInstrumentsV31();
 }
 
@@ -1426,6 +1480,14 @@ const equityV32 = [
   { time: '2026/03', value: 100.18 },
   { time: '2026/06', value: 120.21 },
   { time: '2026/09', value: 113.85 },
+];
+
+const equityV321 = [
+  { time: '2025/09', value: 100 },
+  { time: '2025/12', value: 106.64 },
+  { time: '2026/03', value: 113.6 },
+  { time: '2026/06', value: 125.79 },
+  { time: '2026/09', value: 127.24 },
 ];
 
 const performance = [
@@ -1588,6 +1650,29 @@ const strategyRulesV32 = [
   },
 ];
 
+const strategyRulesV321 = [
+  {
+    title: '保留 V32 多周期入场',
+    body: '继续只使用已收盘 4H 趋势、1H 回踩和 15m 收盘触发；排名、止损距离与最长持仓均不改变。',
+    icon: TrendingDown,
+  },
+  {
+    title: '成交量参与确认',
+    body: '触发 K 线成交量必须达到最近 30 根 15m 均量的 1.0 倍；V32 原规则为 0.8 倍，缩量突破直接剔除。',
+    icon: Activity,
+  },
+  {
+    title: 'PF 平衡型分批退出',
+    body: '1R 落袋 40%，2R 再落袋 30%，保留 30% 由已收盘 4H 的 3 ATR 结构跟踪。',
+    icon: Target,
+  },
+  {
+    title: '双口径验证',
+    body: '同时显示原始价格收益 PF 与固定 0.5% 单笔风险的等风险 PF；当前样本通过约束后冻结，只进入前向观察。',
+    icon: ShieldCheck,
+  },
+];
+
 function MetricCard({
   label,
   value,
@@ -1682,7 +1767,8 @@ function ScanTable({
   scanStats: ScanStats;
   strategy: StrategyKey;
 }) {
-  const isV32 = strategy === 'rank-v32';
+  const isV321 = strategy === 'rank-v321';
+  const isV32 = strategy === 'rank-v32' || isV321;
   return (
     <Card className="table-card">
       <div className="table-scroll">
@@ -1785,7 +1871,7 @@ function ScanTable({
           {dataState === 'error'
             ? 'Gate 行情暂时连接失败 · 保留上次数据'
             : isV32
-              ? `15m 最近收盘 · ${formatChinaTime(closedAt)} · 仅在已收盘 4H / 1H 条件通过后，理论开单为下一根 15m 开盘`
+              ? `${isV321 ? 'V32.1' : 'V32'} · 15m 最近收盘 · ${formatChinaTime(closedAt)} · 仅在已收盘 4H / 1H 条件通过后，理论开单为下一根 15m 开盘`
               : `最近收盘 K 线 · ${formatChinaTime(closedAt)} · 理论开单为下一根 15m 开盘`}
         </span>
         <span>
@@ -1809,7 +1895,8 @@ function StrongestSignals({
   closedAt: number | null;
   strategy: StrategyKey;
 }) {
-  const isV32 = strategy === 'rank-v32';
+  const isV321 = strategy === 'rank-v321';
+  const isV32 = strategy === 'rank-v32' || isV321;
   const strongest = rows
     .filter((item) => item.strength === 'S+')
     .sort((a, b) => b.score - a.score)
@@ -1824,7 +1911,7 @@ function StrongestSignals({
           <strong>最强信号 S+</strong>
           <small>
             {isV32
-              ? 'V32：已收盘 4H / 1H 通过后，下一根 15m 开盘'
+              ? `${isV321 ? 'V32.1' : 'V32'}：已收盘 4H / 1H 通过后，下一根 15m 开盘`
               : '理论开单 = 下一根 15m K 线开盘'}{' '}
             ·{' '}
             {closedAt
@@ -1872,7 +1959,8 @@ function Overview({
   scanStats: ScanStats;
 }) {
   const selectedStrategy = strategyCatalog[strategy];
-  const isV32 = strategy === 'rank-v32';
+  const isV321 = strategy === 'rank-v321';
+  const isV32 = strategy === 'rank-v32' || isV321;
   const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT' | 'WAIT'>(
     '全部',
   );
@@ -1894,27 +1982,31 @@ function Overview({
     strategy === 'rank-v1' ? 'rank-v26' : strategy;
   const metrics = strategyMetrics[testedKey];
   const chartData =
-    testedKey === 'rank-v32'
-      ? equityV32
-      : testedKey === 'rank-v31'
-        ? equityV31
-        : testedKey === 'rank-v28'
-          ? equityV28
-          : testedKey === 'rank-v27'
-            ? equityV27
-            : equityV26;
+    testedKey === 'rank-v321'
+      ? equityV321
+      : testedKey === 'rank-v32'
+        ? equityV32
+        : testedKey === 'rank-v31'
+          ? equityV31
+          : testedKey === 'rank-v28'
+            ? equityV28
+            : testedKey === 'rank-v27'
+              ? equityV27
+              : equityV26;
   const isV31 = strategy === 'rank-v31';
   const isV28 = strategy === 'rank-v28';
   const isV27 = strategy === 'rank-v27';
-  const validationWindow = isV32
-    ? `${v32AnnualValidation.period} · ${v32AnnualValidation.primary.trades} 核心 / ${v32AnnualValidation.broad.trades} 全篮子`
-    : isV31
-      ? `${v31AnnualValidation.period} · ${v31AnnualValidation.primary.trades} 核心 / ${v31AnnualValidation.broad.trades} 全篮子`
-      : isV28
-        ? `${v28AnnualValidation.period} · ${v28AnnualValidation.primary.trades} 笔`
-        : isV27
-          ? `${v27AnnualValidation.period} · ${v27AnnualValidation.primary.trades} 笔`
-          : '约 41 天 · 零成本 1x 压力视图';
+  const validationWindow = isV321
+    ? `${v321AnnualValidation.period} · ${v321AnnualValidation.primary.trades} 核心 / ${v321AnnualValidation.broad.trades} 全篮子`
+    : isV32
+      ? `${v32AnnualValidation.period} · ${v32AnnualValidation.primary.trades} 核心 / ${v32AnnualValidation.broad.trades} 全篮子`
+      : isV31
+        ? `${v31AnnualValidation.period} · ${v31AnnualValidation.primary.trades} 核心 / ${v31AnnualValidation.broad.trades} 全篮子`
+        : isV28
+          ? `${v28AnnualValidation.period} · ${v28AnnualValidation.primary.trades} 笔`
+          : isV27
+            ? `${v27AnnualValidation.period} · ${v27AnnualValidation.primary.trades} 笔`
+            : '约 41 天 · 零成本 1x 压力视图';
   return (
     <>
       <section className="hero-row">
@@ -1942,15 +2034,17 @@ function Overview({
         <div>
           <strong>研究提示</strong>
           <span>
-            {isV32
-              ? 'V32 已接入为独立多周期观察版：4H / 1H 条件只读取已收盘 K 线，15m 才负责触发。年度核心 PF 0.849、前半年不稳定，因此当前不具备前向模拟资格。'
-              : isV31
-                ? 'V31 已替换为主策略：低于 100 万 USDT 成交额或价差超过 0.30% 的合约直接剔除，合格池信号分为 S+、S、A、WATCH；仍需前向数据确认。'
-                : isV28
-                  ? 'v28 年度独立验证：核心八币种 249 笔的 PF 为 1.161、胜率 46.99%；跨篮子 1,212 笔 PF 为 1.168，但仍需样本外复核。'
-                  : isV27
-                    ? 'v27 年度独立验证：核心八币种 862 笔的 PF 为 0.964，未达到研究通过标准；100x 零成本压力也出现 50.70% 的近似爆仓率。'
-                    : '现有结果用于研究对照；高杠杆压力结果不等于可直接开仓。'}
+            {isV321
+              ? 'V32.1 保留 V32 的已收盘多周期结构，只增加均量参与确认和 40% / 30% / 30% 退出。当前样本胜率与 PF 改善，但参数已接触该年度数据，因此只进入冻结前向观察。'
+              : isV32
+                ? 'V32 已接入为独立多周期观察版：4H / 1H 条件只读取已收盘 K 线，15m 才负责触发。年度核心 PF 0.849、前半年不稳定，因此当前不具备前向模拟资格。'
+                : isV31
+                  ? 'V31 已替换为主策略：低于 100 万 USDT 成交额或价差超过 0.30% 的合约直接剔除，合格池信号分为 S+、S、A、WATCH；仍需前向数据确认。'
+                  : isV28
+                    ? 'v28 年度独立验证：核心八币种 249 笔的 PF 为 1.161、胜率 46.99%；跨篮子 1,212 笔 PF 为 1.168，但仍需样本外复核。'
+                    : isV27
+                      ? 'v27 年度独立验证：核心八币种 862 笔的 PF 为 0.964，未达到研究通过标准；100x 零成本压力也出现 50.70% 的近似爆仓率。'
+                      : '现有结果用于研究对照；高杠杆压力结果不等于可直接开仓。'}
           </span>
         </div>
         <button aria-label="查看风险说明" onClick={() => goTo('策略版本')}>
@@ -1962,33 +2056,37 @@ function Overview({
           label="复合收益"
           value={metrics.compound}
           detail={validationWindow}
-          tone={isV32 || isV27 ? 'negative' : 'positive'}
+          tone={(isV32 && !isV321) || isV27 ? 'negative' : 'positive'}
           icon={TrendingDown}
         />
         <MetricCard
           label="利润因子"
           value={metrics.profitFactor}
           detail={
-            isV32
-              ? '核心八币种 · 前后半年稳定性未通过'
-              : isV27
-                ? '同一年度核心篮子 v26 对照为 1.048'
-                : '当前所选策略'
+            isV321
+              ? '等风险 PF / 原始 PF · 核心八币种'
+              : isV32
+                ? '核心八币种 · 前后半年稳定性未通过'
+                : isV27
+                  ? '同一年度核心篮子 v26 对照为 1.048'
+                  : '当前所选策略'
           }
-          tone={isV32 || isV27 ? 'negative' : 'positive'}
+          tone={(isV32 && !isV321) || isV27 ? 'negative' : 'positive'}
           icon={Gauge}
         />
         <MetricCard
           label="胜率"
           value={metrics.winRate}
           detail={
-            isV32
-              ? '核心八币种 · 已收盘多周期条件'
-              : isV28
-                ? '核心八币种 · 全部固定篮子'
-                : isV27
-                  ? '核心八币种 · 固定完整篮子'
-                  : `${metrics.trades} 笔交易`
+            isV321
+              ? '核心八币种 · V32 为 55.91%'
+              : isV32
+                ? '核心八币种 · 已收盘多周期条件'
+                : isV28
+                  ? '核心八币种 · 全部固定篮子'
+                  : isV27
+                    ? '核心八币种 · 固定完整篮子'
+                    : `${metrics.trades} 笔交易`
           }
           tone={isV32 || isV27 ? 'warning' : 'neutral'}
           icon={Activity}
@@ -2042,7 +2140,7 @@ function Overview({
                   tick={{ fill: '#918d84', fontSize: 11 }}
                 />
                 <YAxis
-                  domain={isV32 ? [85, 125] : [95, 125]}
+                  domain={isV321 ? [95, 130] : isV32 ? [85, 125] : [95, 125]}
                   axisLine={false}
                   tickLine={false}
                   tick={{ fill: '#918d84', fontSize: 11 }}
@@ -2277,7 +2375,8 @@ function ScannerPage({
   scanStats: ScanStats;
 }) {
   const selectedStrategy = strategyCatalog[strategy];
-  const isV32 = strategy === 'rank-v32';
+  const isV321 = strategy === 'rank-v321';
+  const isV32 = strategy === 'rank-v32' || isV321;
   const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT' | 'WAIT'>(
     '全部',
   );
@@ -2473,8 +2572,8 @@ function ScannerPage({
                 )}
                 {isV32
                   ? selected.signal === 'WAIT'
-                    ? 'V32 当前没有完整的 4H → 1H → 15m 闭合条件；不把高分或强弱排名当作开单理由。'
-                    : `V32 闭合信号：4H 与 1H 均已收盘确认，理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。止损和分批止盈仅是研究参考，不代表自动开仓。`
+                    ? `${isV321 ? 'V32.1' : 'V32'} 当前没有完整的 4H → 1H → 15m 闭合条件；${isV321 ? '量比还必须达到 1.0x。' : ''}不把高分或强弱排名当作开单理由。`
+                    : `${isV321 ? 'V32.1' : 'V32'} 闭合信号：4H 与 1H 均已收盘确认，理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。止损和分批止盈仅是研究参考，不代表自动开仓。`
                   : selected.strength === 'S+'
                     ? `S+ 最强信号：排名、趋势、VWAP 与成交量一致；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。已过开盘就等待新收盘，不追价。`
                     : selected.signal === 'WAIT'
@@ -2508,16 +2607,19 @@ function GateBacktestPage({
   const metrics = strategyMetrics[strategy];
   const currentExitBreakdown = metrics.exits;
   const chartData =
-    strategy === 'rank-v32'
-      ? equityV32
-      : strategy === 'rank-v31'
-        ? equityV31
-        : strategy === 'rank-v28'
-          ? equityV28
-          : strategy === 'rank-v27'
-            ? equityV27
-            : equityV26;
-  const isV32 = strategy === 'rank-v32';
+    strategy === 'rank-v321'
+      ? equityV321
+      : strategy === 'rank-v32'
+        ? equityV32
+        : strategy === 'rank-v31'
+          ? equityV31
+          : strategy === 'rank-v28'
+            ? equityV28
+            : strategy === 'rank-v27'
+              ? equityV27
+              : equityV26;
+  const isV321 = strategy === 'rank-v321';
+  const isV32 = strategy === 'rank-v32' || isV321;
   const isV31 = strategy === 'rank-v31';
   const isV28 = strategy === 'rank-v28';
   const isV27 = strategy === 'rank-v27';
@@ -2543,15 +2645,17 @@ function GateBacktestPage({
               {selected.name} {selected.version}
             </CardTitle>
             <CardDescription>
-              {isV32
-                ? '年度前后半年稳定性未通过 · 仅保留为多周期研究观察'
-                : isV31
-                  ? '年度规则筛选通过 · 仅进入前向模拟'
-                  : isV28
-                    ? '年度独立验证中 · 仅保留为观察研究'
-                    : isV27
-                      ? '年度独立验证未通过 · 仅保留为观察研究'
-                      : selected.mode}
+              {isV321
+                ? '当前约束通过 · 参数冻结后进入前向观察'
+                : isV32
+                  ? '年度前后半年稳定性未通过 · 仅保留为多周期研究观察'
+                  : isV31
+                    ? '年度规则筛选通过 · 仅进入前向模拟'
+                    : isV28
+                      ? '年度独立验证中 · 仅保留为观察研究'
+                      : isV27
+                        ? '年度独立验证未通过 · 仅保留为观察研究'
+                        : selected.mode}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -2661,15 +2765,17 @@ function GateBacktestPage({
               </CardDescription>
             </div>
             <Badge className="status-badge warning">
-              {isV32
-                ? '年度 HOLD'
-                : isV31
-                  ? '前向模拟'
-                  : isV28
-                    ? '样本外复核中'
-                    : isV27
-                      ? '年度未通过'
-                      : '需要复核'}
+              {isV321
+                ? '冻结观察'
+                : isV32
+                  ? '年度 HOLD'
+                  : isV31
+                    ? '前向模拟'
+                    : isV28
+                      ? '样本外复核中'
+                      : isV27
+                        ? '年度未通过'
+                        : '需要复核'}
             </Badge>
           </CardHeader>
           <CardContent>
@@ -2709,15 +2815,17 @@ function GateBacktestPage({
                 />
                 <YAxis
                   domain={
-                    isV32
-                      ? [85, 125]
-                      : isV31
-                        ? [95, 115]
-                        : isV28
+                    isV321
+                      ? [95, 130]
+                      : isV32
+                        ? [85, 125]
+                        : isV31
                           ? [95, 115]
-                          : isV27
-                            ? [75, 105]
-                            : [95, 125]
+                          : isV28
+                            ? [95, 115]
+                            : isV27
+                              ? [75, 105]
+                              : [95, 125]
                   }
                   axisLine={false}
                   tickLine={false}
@@ -2745,23 +2853,29 @@ function GateBacktestPage({
       {(isV32 || isV31 || isV28 || isV27) && (
         <Card className="exit-card">
           <CardHeader>
-            <CardTitle>年度独立验证 · 结论</CardTitle>
+            <CardTitle>
+              {isV321 ? '年度候选筛选 · 结论' : '年度独立验证 · 结论'}
+            </CardTitle>
             <CardDescription>
-              {isV32
-                ? v32AnnualValidation.period
-                : isV31
-                  ? v31AnnualValidation.period
-                  : isV28
-                    ? v28AnnualValidation.period
-                    : v27AnnualValidation.period}
+              {isV321
+                ? v321AnnualValidation.period
+                : isV32
+                  ? v32AnnualValidation.period
+                  : isV31
+                    ? v31AnnualValidation.period
+                    : isV28
+                      ? v28AnnualValidation.period
+                      : v27AnnualValidation.period}
               ；
-              {isV32
-                ? v32AnnualValidation.source
-                : isV31
-                  ? v31AnnualValidation.source
-                  : isV28
-                    ? v28AnnualValidation.source
-                    : v27AnnualValidation.source}
+              {isV321
+                ? v321AnnualValidation.source
+                : isV32
+                  ? v32AnnualValidation.source
+                  : isV31
+                    ? v31AnnualValidation.source
+                    : isV28
+                      ? v28AnnualValidation.source
+                      : v27AnnualValidation.source}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -2769,42 +2883,53 @@ function GateBacktestPage({
               <div>
                 <span>主测试</span>
                 <strong>
-                  {isV32
-                    ? v32AnnualValidation.primary.trades
-                    : isV31
-                      ? v31AnnualValidation.primary.trades
-                      : isV28
-                        ? v28AnnualValidation.primary.trades
-                        : v27AnnualValidation.primary.trades}{' '}
+                  {isV321
+                    ? v321AnnualValidation.primary.trades
+                    : isV32
+                      ? v32AnnualValidation.primary.trades
+                      : isV31
+                        ? v31AnnualValidation.primary.trades
+                        : isV28
+                          ? v28AnnualValidation.primary.trades
+                          : v27AnnualValidation.primary.trades}{' '}
                   笔
                 </strong>
               </div>
               <div>
                 <span>全篮子复核</span>
                 <strong>
-                  {isV32
-                    ? v32AnnualValidation.broad.trades
-                    : isV31
-                      ? v31AnnualValidation.broad.trades
-                      : isV28
-                        ? v28AnnualValidation.broad.trades
-                        : v27AnnualValidation.broad.trades}{' '}
+                  {isV321
+                    ? v321AnnualValidation.broad.trades
+                    : isV32
+                      ? v32AnnualValidation.broad.trades
+                      : isV31
+                        ? v31AnnualValidation.broad.trades
+                        : isV28
+                          ? v28AnnualValidation.broad.trades
+                          : v27AnnualValidation.broad.trades}{' '}
                   笔
                 </strong>
               </div>
               <div>
                 <span>全篮子 PF</span>
                 <strong>
-                  {isV32
-                    ? v32AnnualValidation.broad.profitFactor
-                    : isV31
-                      ? v31AnnualValidation.broad.profitFactor
-                      : isV28
-                        ? v28AnnualValidation.broad.profitFactor
-                        : v27AnnualValidation.broad.profitFactor}
+                  {isV321
+                    ? `${v321AnnualValidation.broad.riskProfitFactor} 等风险 / ${v321AnnualValidation.broad.rawProfitFactor} 原始`
+                    : isV32
+                      ? v32AnnualValidation.broad.profitFactor
+                      : isV31
+                        ? v31AnnualValidation.broad.profitFactor
+                        : isV28
+                          ? v28AnnualValidation.broad.profitFactor
+                          : v27AnnualValidation.broad.profitFactor}
                 </strong>
               </div>
-              {isV32 ? (
+              {isV321 ? (
+                <div>
+                  <span>前后半年等风险 PF</span>
+                  <strong>1.381 / 1.333</strong>
+                </div>
+              ) : isV32 ? (
                 <div>
                   <span>前后半年 PF</span>
                   <strong className="negative-text">
@@ -2832,21 +2957,25 @@ function GateBacktestPage({
             </div>
             <div className="cost-warning">
               <AlertTriangle size={15} /> 四个时间段 PF：
-              {isV32
-                ? v32AnnualValidation.quarterlyProfitFactors
-                : isV31
-                  ? v31AnnualValidation.quarterlyProfitFactors
-                  : isV28
-                    ? v28AnnualValidation.quarterlyProfitFactors
-                    : v27AnnualValidation.quarterlyProfitFactors}
+              {isV321
+                ? v321AnnualValidation.quarterlyRiskProfitFactors
+                : isV32
+                  ? v32AnnualValidation.quarterlyProfitFactors
+                  : isV31
+                    ? v31AnnualValidation.quarterlyProfitFactors
+                    : isV28
+                      ? v28AnnualValidation.quarterlyProfitFactors
+                      : v27AnnualValidation.quarterlyProfitFactors}
               。
-              {isV32
-                ? `V32 的预先声明门槛为全篮子 PF ≥ 1.15、两半各 PF ≥ 1.05，且每半至少 75 笔；实际全篮子为 ${v32AnnualValidation.halfYear.broad}，核心为 ${v32AnnualValidation.halfYear.core}。因此页面只允许研究观察，不把它标成可执行策略。`
-                : isV31
-                  ? 'V31 的规则门槛通过，但参数与本次复核使用同一年度样本；核心第三季度 PF 仅 0.613，必须先做新的前向模拟。'
-                  : isV28
-                    ? 'v28 的整体指标优于 v27，但核心样本量较小，且仍未完成独立样本外验证；不应按当前规则开仓或使用 100x。'
-                    : '核心主测试与跨篮子复核均未显示稳定正期望；不应按当前规则开仓或使用 100x。'}
+              {isV321
+                ? `V32.1 保留 359 笔（原 V32 的 75.58%），胜率 55.99%；全篮子等风险 PF 1.357、原始 PF 1.232。${v321AnnualValidation.halfYear.broad}；核心为 ${v321AnnualValidation.halfYear.core}。第四段等风险 PF 仅 1.066，且规则从同一年度样本中选出，所以只能冻结前向观察。`
+                : isV32
+                  ? `V32 的预先声明门槛为全篮子 PF ≥ 1.15、两半各 PF ≥ 1.05，且每半至少 75 笔；实际全篮子为 ${v32AnnualValidation.halfYear.broad}，核心为 ${v32AnnualValidation.halfYear.core}。因此页面只允许研究观察，不把它标成可执行策略。`
+                  : isV31
+                    ? 'V31 的规则门槛通过，但参数与本次复核使用同一年度样本；核心第三季度 PF 仅 0.613，必须先做新的前向模拟。'
+                    : isV28
+                      ? 'v28 的整体指标优于 v27，但核心样本量较小，且仍未完成独立样本外验证；不应按当前规则开仓或使用 100x。'
+                      : '核心主测试与跨篮子复核均未显示稳定正期望；不应按当前规则开仓或使用 100x。'}
             </div>
           </CardContent>
         </Card>
@@ -3273,22 +3402,25 @@ function StrategyPage({
         <TradingViewBacktest setToast={setToast} />
       </>
     );
-  const isV32 = strategy === 'rank-v32';
+  const isV321 = strategy === 'rank-v321';
+  const isV32 = strategy === 'rank-v32' || isV321;
   const isV31 = strategy === 'rank-v31';
   const isV28 = strategy === 'rank-v28';
   const isV27 = strategy === 'rank-v27';
   const isV26 = strategy === 'rank-v26';
-  const rules = isV32
-    ? strategyRulesV32
-    : isV31
-      ? strategyRulesV31
-      : isV28
-        ? strategyRulesV28
-        : isV27
-          ? strategyRulesV27
-          : isV26
-            ? strategyRulesV26
-            : strategyRulesV25;
+  const rules = isV321
+    ? strategyRulesV321
+    : isV32
+      ? strategyRulesV32
+      : isV31
+        ? strategyRulesV31
+        : isV28
+          ? strategyRulesV28
+          : isV27
+            ? strategyRulesV27
+            : isV26
+              ? strategyRulesV26
+              : strategyRulesV25;
   const selected = strategyCatalog[strategy];
   return (
     <>
@@ -3297,50 +3429,56 @@ function StrategyPage({
         kicker="Strategy registry"
         title="策略版本"
         description={
-          isV32
-            ? 'v32 是独立的多周期波段候选，保留 v31 作为短线版本。它使用真实已收盘 4H / 1H 上下文，但一年期前后半年稳定性未通过，因此仅允许研究观察。'
-            : isV31
-              ? 'v31 已替换为当前主策略：不合格流动性合约直接剔除，只对合格美股永续与主流加密进行排名；年度规则筛选通过，仍需前向模拟。'
-              : isV28
-                ? 'v28 是基于 v27 诊断结果独立生成的质量带版本，年度代理数据已有改善，但核心样本量仍需扩大。'
-                : isV27
-                  ? 'v27 的短样本表现较好，但年度独立验证没有通过；当前仅作为规则研究保留。'
-                  : isV26
-                    ? 'v26 已完成与 v25 的同数据对照，作为宽松候选保留。'
-                    : 'v25 作为旧版基线保留，用于比较过滤规则和风险变化。'
+          isV321
+            ? 'v32.1 是独立的 PF 平衡候选，V31 与 V32 都保留。它只增加均量参与确认和新的分批比例；当前约束通过后参数冻结，仅允许前向观察。'
+            : isV32
+              ? 'v32 是独立的多周期波段候选，保留 v31 作为短线版本。它使用真实已收盘 4H / 1H 上下文，但一年期前后半年稳定性未通过，因此仅允许研究观察。'
+              : isV31
+                ? 'v31 已替换为当前主策略：不合格流动性合约直接剔除，只对合格美股永续与主流加密进行排名；年度规则筛选通过，仍需前向模拟。'
+                : isV28
+                  ? 'v28 是基于 v27 诊断结果独立生成的质量带版本，年度代理数据已有改善，但核心样本量仍需扩大。'
+                  : isV27
+                    ? 'v27 的短样本表现较好，但年度独立验证没有通过；当前仅作为规则研究保留。'
+                    : isV26
+                      ? 'v26 已完成与 v25 的同数据对照，作为宽松候选保留。'
+                      : 'v25 作为旧版基线保留，用于比较过滤规则和风险变化。'
         }
       />
       <div className="strategy-hero">
         <div>
           <div className="version-row">
             <Badge className="version-badge">
-              {isV32
-                ? 'v32 · CLOSED-CANDLE MTF'
-                : isV31
-                  ? 'v31 · BALANCED EXTENSION'
-                  : isV28
-                    ? 'v28 · QUALITY BAND'
-                    : isV27
-                      ? 'v27 · PRECISION'
-                      : isV26
-                        ? 'v26 · CANDIDATE'
-                        : 'v25 · BASELINE'}
+              {isV321
+                ? 'v32.1 · PF BALANCED MTF'
+                : isV32
+                  ? 'v32 · CLOSED-CANDLE MTF'
+                  : isV31
+                    ? 'v31 · BALANCED EXTENSION'
+                    : isV28
+                      ? 'v28 · QUALITY BAND'
+                      : isV27
+                        ? 'v27 · PRECISION'
+                        : isV26
+                          ? 'v26 · CANDIDATE'
+                          : 'v25 · BASELINE'}
             </Badge>
             <span className="muted-label">Gate stocks + mainstream crypto</span>
           </div>
           <h2>{selected.name}</h2>
           <p>
-            {isV32
-              ? 'V32 不替换 V31：它先以已收盘 4H 的趋势结构决定方向，再要求 1H 回踩和 15m 收盘触发。年度核心 PF 为 0.849、前半年 PF 0.735，未达到预设稳定性标准，所以部署为透明的研究观察而非前向模拟。'
-              : isV31
-                ? '在 V28 质量带基础上增加流动性硬过滤：24 小时成交额至少 100 万 USDT、买卖价差不超过 0.30%。合格结果再按排名、趋势、VWAP 和成交量综合成 S+ / S / A / WATCH。'
-                : isV28
-                  ? '在 v27 基础上生成的独立策略：保持前后两名和原退出规则，只把 ADX 收窄至 15–25、成交量比收窄至 1.0–1.4。核心八币种一年期 PF 1.161、胜率 46.99%，目前仍只用于观察。'
-                  : isV27
-                    ? '在 v26 基础上只保留最强和最弱前两名，并限定成交量、ADX 与 ATR。短样本改善未迁移到一年期验证：核心八币种 PF 0.964、胜率 42.00%，因此不具备部署条件。'
-                    : isV26
-                      ? '在横截面排名基础上增加趋势方向、VWAP 同侧和最大追价距离过滤，信号收盘确认后于下一根 15 分钟 K 线开盘模拟成交。'
-                      : '用横截面强弱排名寻找趋势中的回踩延续，信号收盘确认，下一根 15 分钟 K 线开盘模拟成交。'}
+            {isV321
+              ? 'V32.1 不替换 V31 或 V32。它把触发量门槛从 0.8x 提高到 1.0x，并采用 40%@1R、30%@2R、30% 趋势尾仓。当前年度筛选中，全篮子胜率 55.99%，等风险 PF 1.357、原始 PF 1.232；由于规则已接触本样本，只能冻结前向观察。'
+              : isV32
+                ? 'V32 不替换 V31：它先以已收盘 4H 的趋势结构决定方向，再要求 1H 回踩和 15m 收盘触发。年度核心 PF 为 0.849、前半年 PF 0.735，未达到预设稳定性标准，所以部署为透明的研究观察而非前向模拟。'
+                : isV31
+                  ? '在 V28 质量带基础上增加流动性硬过滤：24 小时成交额至少 100 万 USDT、买卖价差不超过 0.30%。合格结果再按排名、趋势、VWAP 和成交量综合成 S+ / S / A / WATCH。'
+                  : isV28
+                    ? '在 v27 基础上生成的独立策略：保持前后两名和原退出规则，只把 ADX 收窄至 15–25、成交量比收窄至 1.0–1.4。核心八币种一年期 PF 1.161、胜率 46.99%，目前仍只用于观察。'
+                    : isV27
+                      ? '在 v26 基础上只保留最强和最弱前两名，并限定成交量、ADX 与 ATR。短样本改善未迁移到一年期验证：核心八币种 PF 0.964、胜率 42.00%，因此不具备部署条件。'
+                      : isV26
+                        ? '在横截面排名基础上增加趋势方向、VWAP 同侧和最大追价距离过滤，信号收盘确认后于下一根 15 分钟 K 线开盘模拟成交。'
+                        : '用横截面强弱排名寻找趋势中的回踩延续，信号收盘确认，下一根 15 分钟 K 线开盘模拟成交。'}
           </p>
         </div>
         <Button
@@ -3349,17 +3487,19 @@ function StrategyPage({
           }
         >
           <Check size={15} />{' '}
-          {isV32
-            ? '研究观察'
-            : isV31
-              ? '前向模拟'
-              : isV28
-                ? '样本外复核中'
-                : isV27
-                  ? '仅观察'
-                  : isV26
-                    ? '研究候选'
-                    : '对照版本'}
+          {isV321
+            ? '冻结观察'
+            : isV32
+              ? '研究观察'
+              : isV31
+                ? '前向模拟'
+                : isV28
+                  ? '样本外复核中'
+                  : isV27
+                    ? '仅观察'
+                    : isV26
+                      ? '研究候选'
+                      : '对照版本'}
         </Button>
       </div>
       <div className="strategy-layout">
@@ -3368,17 +3508,19 @@ function StrategyPage({
             <CardTitle>信号规则</CardTitle>
             <CardDescription>
               来自{' '}
-              {isV32
-                ? 'Gate_V32_MTF_Runner'
-                : isV31
-                  ? 'Gate_V31_Balanced_Extension'
-                  : isV28
-                    ? 'Gate_V28_Quality_Band'
-                    : isV27
-                      ? 'Gate_V27_Precision_Filter'
-                      : isV26
-                        ? 'Gate_V26_Scanner_Improved'
-                        : 'Gate_V25_Scanner_Improved'}
+              {isV321
+                ? 'Gate_V32_1_PF_Balanced'
+                : isV32
+                  ? 'Gate_V32_MTF_Runner'
+                  : isV31
+                    ? 'Gate_V31_Balanced_Extension'
+                    : isV28
+                      ? 'Gate_V28_Quality_Band'
+                      : isV27
+                        ? 'Gate_V27_Precision_Filter'
+                        : isV26
+                          ? 'Gate_V26_Scanner_Improved'
+                          : 'Gate_V25_Scanner_Improved'}
             </CardDescription>
           </CardHeader>
           <CardContent className="rule-list">
@@ -3400,17 +3542,19 @@ function StrategyPage({
           <CardHeader>
             <CardTitle>参数快照</CardTitle>
             <CardDescription>
-              {isV32
-                ? 'V32Config · closed-candle-mtf'
-                : isV31
-                  ? 'V31Config · balanced-extension'
-                  : isV28
-                    ? 'V28Config · quality-band'
-                    : isV27
-                      ? 'V27Config · precision'
-                      : isV26
-                        ? 'V26Config · guarded'
-                        : 'StrategyConfig · v25'}
+              {isV321
+                ? 'V321Config · participation-confirmed'
+                : isV32
+                  ? 'V32Config · closed-candle-mtf'
+                  : isV31
+                    ? 'V31Config · balanced-extension'
+                    : isV28
+                      ? 'V28Config · quality-band'
+                      : isV27
+                        ? 'V27Config · precision'
+                        : isV26
+                          ? 'V26Config · guarded'
+                          : 'StrategyConfig · v25'}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -3435,7 +3579,13 @@ function StrategyPage({
               </div>
               <div>
                 <dt>目标</dt>
-                <dd>{isV32 ? '25%@1R · 25%@2R · 余仓跟踪' : '2.0R'}</dd>
+                <dd>
+                  {isV321
+                    ? '40%@1R · 30%@2R · 30% 跟踪'
+                    : isV32
+                      ? '25%@1R · 25%@2R · 余仓跟踪'
+                      : '2.0R'}
+                </dd>
               </div>
               <div>
                 <dt>排名窗口</dt>
@@ -3458,11 +3608,13 @@ function StrategyPage({
                   <div>
                     <dt>成交量比例</dt>
                     <dd>
-                      {isV32
-                        ? '≥ 0.8x'
-                        : isV31 || isV28
-                          ? '1.0–1.4x'
-                          : '1.0–2.0x'}
+                      {isV321
+                        ? '≥ 1.0x'
+                        : isV32
+                          ? '≥ 0.8x'
+                          : isV31 || isV28
+                            ? '1.0–1.4x'
+                            : '1.0–2.0x'}
                     </dd>
                   </div>
                   <div>
@@ -3536,8 +3688,23 @@ function StrategyPage({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className={`history-row ${isV32 ? 'active' : ''}`}>
-            <span className={`history-dot ${isV32 ? '' : 'muted'}`} />
+          <div className={`history-row ${isV321 ? 'active' : ''}`}>
+            <span className={`history-dot ${isV321 ? '' : 'muted'}`} />
+            <div>
+              <strong>v32.1 · Participation-Confirmed MTF Runner</strong>
+              <small>
+                冻结候选 · 76 笔核心 / 359 笔全篮子 · 等风险 PF 1.573 / 1.357 ·
+                胜率 59.21% / 55.99% · 仍需新数据前向验证
+              </small>
+            </div>
+            <Badge className="status-badge warning">冻结观察</Badge>
+          </div>
+          <div
+            className={`history-row ${strategy === 'rank-v32' ? 'active' : ''}`}
+          >
+            <span
+              className={`history-dot ${strategy === 'rank-v32' ? '' : 'muted'}`}
+            />
             <div>
               <strong>v32 · Closed-Candle Multi-Timeframe Runner</strong>
               <small>
@@ -3858,6 +4025,14 @@ export default function Home() {
         <div className="sidebar-section-label">策略库</div>
         <div className="asset-list">
           <button
+            className={`asset-item ${selectedStrategy === 'rank-v321' ? 'selected' : ''}`}
+            onClick={() => chooseStrategy('rank-v321')}
+          >
+            <span className="asset-dot violet" />
+            Participation-Confirmed MTF{' '}
+            <span className="asset-version">v32.1</span>
+          </button>
+          <button
             className={`asset-item ${selectedStrategy === 'rank-v32' ? 'selected' : ''}`}
             onClick={() => chooseStrategy('rank-v32')}
           >
@@ -3979,7 +4154,9 @@ export default function Home() {
         <div className="content-wrap">
           {pageContent}
           <footer className="page-footer">
-            <span>Gate Quant Lab · V31 short-term + V32 MTF research</span>
+            <span>
+              Gate Quant Lab · V31 short-term + V32 / V32.1 MTF research
+            </span>
             <span>
               <ShieldCheck size={14} /> 不构成投资建议
             </span>
