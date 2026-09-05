@@ -1189,6 +1189,7 @@ async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
       const tf4h = calculateTimeframeSnapshot(candles4h, 3, 6, false);
       const latest15m = tf15.latest;
       const previous15m = candles15m.at(-2)!;
+      const previous4h = candles4h.at(-2)!;
       const h4Long =
         tf4h.latest.close > tf4h.ema50 &&
         tf4h.ema50 > tf4h.ema200 &&
@@ -1201,6 +1202,18 @@ async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
         tf4h.ema50Slope < 0 &&
         tf4h.minusDi > tf4h.plusDi &&
         tf4h.adx >= 18;
+      const h4EntryLong =
+        h4Long &&
+        tf4h.adx >= 22 &&
+        tf4h.volumeRatio >= 1 &&
+        tf4h.latest.close > previous4h.high &&
+        (tf4h.latest.close - tf4h.ema20) / tf4h.atr <= 1.25;
+      const h4EntryShort =
+        h4Short &&
+        tf4h.adx >= 22 &&
+        tf4h.volumeRatio >= 1 &&
+        tf4h.latest.close < previous4h.low &&
+        (tf4h.ema20 - tf4h.latest.close) / tf4h.atr <= 1.25;
       const h1TrendLong =
         tf1h.latest.close > tf1h.ema20 &&
         tf1h.ema20 > tf1h.ema50 &&
@@ -1290,9 +1303,10 @@ async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
         volumeRatio: tf15.volumeRatio,
         h4Long,
         h4Short,
+        h4EntryLong,
+        h4EntryShort,
         h1Long,
         h1Short,
-        h4Adx: tf4h.adx,
         triggerLong,
         triggerShort,
         quality,
@@ -1322,13 +1336,13 @@ async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
             ? 10
             : 8
           : 0;
-      // P0 is a regime alert, never an entry by itself. It is deliberately
-      // stricter than the V32.1 backtest rule so the frozen entry model and
-      // its reported metrics are not changed by this display/alert layer.
+      // P0 is an independent 4H entry alert, not a prerequisite for the
+      // existing 15m model. It is deliberately kept outside V32.1's frozen
+      // backtest rule so the reported V32.1 metrics stay intact.
       const h4Priority: H4Priority =
-        rank === 1 && item.h4Long && item.h4Adx >= 22
+        rank === 1 && item.h4EntryLong
           ? 'P0-LONG'
-          : rank === all.length && item.h4Short && item.h4Adx >= 22
+          : rank === all.length && item.h4EntryShort
             ? 'P0-SHORT'
             : 'WATCH';
       const directionalScore = Math.max(
@@ -1750,7 +1764,7 @@ function H4PriorityBadge({ priority }: { priority?: H4Priority }) {
   return (
     <Badge className={`priority-badge ${isLong ? 'long' : 'short'}`}>
       <Zap size={12} />
-      P0 4H {isLong ? '多头' : '空头'}
+      P0 4H {isLong ? '多头开单' : '空头开单'}
     </Badge>
   );
 }
@@ -1916,7 +1930,7 @@ function ScanTable({
               ? '正在整理扫描范围'
               : '点击标的查看详情'}
         </span>
-        {isV32 && <span>P0 4H ${h4PriorityCount} 个 · P1 = 15m 闭合排单</span>}
+        {isV32 && <span>P0 = 4H 开单 ${h4PriorityCount} 个 · P1 = 15m 开单</span>}
       </div>
     </Card>
   );
@@ -1944,7 +1958,7 @@ function StrongestSignals({
           <Zap size={14} />
         </span>
         <div>
-          <strong>{isV32 ? 'P1 15m 标准排单 · S+' : '最强信号 S+'}</strong>
+          <strong>{isV32 ? 'P1 15m 次级开单 · S+' : '最强信号 S+'}</strong>
           <small>
             {isV32
               ? `${isV321 ? 'V32.1' : 'V32'}：已收盘 4H / 1H 通过后，下一根 15m 开盘`
@@ -1964,10 +1978,10 @@ function StrongestSignals({
               <span>
                 {item.h4Priority === 'P0-LONG' ||
                 item.h4Priority === 'P0-SHORT'
-                  ? 'P0 → P1'
+                  ? 'P0 + P1'
                   : item.signal === 'LONG'
-                    ? '标准多头'
-                    : '标准空头'}
+                    ? '15m 次级多头'
+                    : '15m 次级空头'}
               </span>
               <em>{item.score}</em>
               <small>
@@ -2584,12 +2598,12 @@ function ScannerPage({
                       <span>4H 最高优先级</span>
                       <strong>
                         {selected.h4Priority === 'P0-LONG'
-                          ? 'P0 多头方向已授权'
+                          ? 'P0 多头开单信号'
                           : selected.h4Priority === 'P0-SHORT'
-                            ? 'P0 空头方向已授权'
+                            ? 'P0 空头开单信号'
                             : 'P0 等待'}
                       </strong>
-                      <em>仅代表 4H 趋势许可，不构成开仓</em>
+                      <em>已收盘 4H 突破后，理论开单为下一根 4H 开盘</em>
                     </div>
                     <div>
                       <span>1H / 15m</span>
@@ -2628,9 +2642,9 @@ function ScannerPage({
                   ? selected.signal === 'WAIT'
                     ? selected.h4Priority === 'P0-LONG' ||
                         selected.h4Priority === 'P0-SHORT'
-                      ? `P0 4H 方向已授权，但尚未形成 P1 15m 标准排单；继续等待 1H 结构、15m 已收盘触发和${isV321 ? ' ≥ 1.0x 量比' : '成交量'}确认。`
+                      ? `P0 4H 最高优先级开单已闭合：理论开单为下一根 4H 开盘。15m 次级开单尚未形成，可独立等待，不影响 P0 信号。`
                       : `${isV321 ? 'V32.1' : 'V32'} 当前没有完整的 4H → 1H → 15m 闭合条件；${isV321 ? '量比还必须达到 1.0x。' : ''}不把高分或强弱排名当作开单理由。`
-                    : `${selected.h4Priority === 'P0-LONG' || selected.h4Priority === 'P0-SHORT' ? 'P0 → P1 闭合：' : 'P1 15m 标准排单：'}4H 与 1H 均已收盘确认，理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。止损和分批止盈仅是研究参考，不代表自动开仓。`
+                    : `${selected.h4Priority === 'P0-LONG' || selected.h4Priority === 'P0-SHORT' ? 'P0 与 P1 同时出现：' : 'P1 15m 次级开单：'}4H 与 1H 均已收盘确认，P1 理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。P0 与 P1 独立计时；止损和分批止盈仅是研究参考，不代表自动开仓。`
                   : selected.strength === 'S+'
                     ? `S+ 最强信号：排名、趋势、VWAP 与成交量一致；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。已过开盘就等待新收盘，不追价。`
                     : selected.signal === 'WAIT'
@@ -3851,7 +3865,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
       <SectionHeading
         kicker="Alert center"
         title="告警中心"
-        description="P0 只提示已收盘 4H 的最高优先级方向；P1 只在 15m 完整闭合时生成标准排单提醒。不会自动下单。"
+        description="P0 是独立的 4H 最高优先级开单；P1 是独立的 15m 次级开单。两者都只在 K 线收盘后通知，不会自动下单。"
       />
       <div className="alert-grid">
         <Card className="telegram-card">
@@ -3862,7 +3876,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
               </span>
               <div>
                 <CardTitle>Telegram 通知</CardTitle>
-                <CardDescription>P0 方向预警 + P1 15m 标准排单</CardDescription>
+                <CardDescription>P0 4H 高优先级开单 + P1 15m 次级开单</CardDescription>
               </div>
             </div>
           </CardHeader>
@@ -3873,7 +3887,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
                 <strong>{enabled ? '研究告警已启用' : '研究告警已暂停'}</strong>
                 <small>
                   {enabled
-                    ? 'P0 为 4H 趋势许可；P1 才包含下一根 15m 开盘、止损与分批退出参考。'
+                    ? 'P0 在下一根 4H 开盘提醒；P1 在下一根 15m 开盘提醒。两者独立发送。'
                     : '重新开启后才会生成通知。'}
                 </small>
               </div>
@@ -3920,19 +3934,19 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
               </span>
               <div>
                 <strong>P0 · 4H 最高优先级</strong>
-                <small>仅限强弱排名第一/末位、4H 趋势与 ADX ≥ 22 的已收盘方向；只预警，不开仓。</small>
+                <small>强弱排名第一/末位、4H 趋势、ADX ≥ 22、量比 ≥ 1.0x，且已收盘突破前一根 4H 高/低点；下一根 4H 开盘为理论开单。它不计入现有 V32.1 年度回测指标。</small>
               </div>
-              <span className="event-tag">方向许可</span>
+              <span className="event-tag">最高</span>
             </div>
             <div className="event-row">
               <span className="event-icon amber">
                 <Target size={14} />
               </span>
               <div>
-                <strong>P1 · 15m 标准排单</strong>
-                <small>4H / 1H / 15m 均已收盘，触发量比合格后才提示；内容包含理论下一根开盘、止损、TP1 与 TP2。</small>
+                <strong>P1 · 15m 次级开单</strong>
+                <small>4H / 1H / 15m 均已收盘，触发量比合格后才提示；内容包含理论下一根 15m 开盘、止损、TP1 与 TP2。</small>
               </div>
-              <span className="event-tag warn">执行观察</span>
+              <span className="event-tag warn">次级</span>
             </div>
             <div className="event-row">
               <span className="event-icon slate">
