@@ -59,6 +59,7 @@ import {
 
 type Signal = 'LONG' | 'SHORT' | 'WAIT';
 type SignalStrength = 'S+' | 'S' | 'A' | 'WATCH';
+type H4Priority = 'P0-LONG' | 'P0-SHORT' | 'WATCH';
 type AssetClass = 'US_STOCK' | 'CRYPTO';
 type DataState = 'loading' | 'live' | 'error';
 type Instrument = {
@@ -85,6 +86,7 @@ type Instrument = {
   tp1?: string;
   tp2?: string;
   trail?: string;
+  h4Priority?: H4Priority;
 };
 type ScanStats = {
   total: number;
@@ -1290,6 +1292,7 @@ async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
         h4Short,
         h1Long,
         h1Short,
+        h4Adx: tf4h.adx,
         triggerLong,
         triggerShort,
         quality,
@@ -1319,6 +1322,15 @@ async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
             ? 10
             : 8
           : 0;
+      // P0 is a regime alert, never an entry by itself. It is deliberately
+      // stricter than the V32.1 backtest rule so the frozen entry model and
+      // its reported metrics are not changed by this display/alert layer.
+      const h4Priority: H4Priority =
+        rank === 1 && item.h4Long && item.h4Adx >= 22
+          ? 'P0-LONG'
+          : rank === all.length && item.h4Short && item.h4Adx >= 22
+            ? 'P0-SHORT'
+            : 'WATCH';
       const directionalScore = Math.max(
         (item.h4Long || item.h4Short ? 35 : 0) +
           (item.h1Long || item.h1Short ? 20 : 0) +
@@ -1358,6 +1370,7 @@ async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
         volume: item.volume,
         volumeRatio: item.volumeRatio,
         timeframe: isV321 ? ('V32.1' as const) : ('V32' as const),
+        h4Priority,
         regimeClosedAt: item.regimeClosedAt,
         setup: `4H ${item.h4Long || item.h4Short ? '通过' : '未通过'} · 1H ${item.h1Long || item.h1Short ? '通过' : '未通过'} · 15m ${item.triggerLong || item.triggerShort ? '触发' : '等待'} · 量比 ${item.volumeRatio.toFixed(2)}x`,
         stop: Number.isFinite(stop) ? formatMarketNumber(stop) : undefined,
@@ -1729,6 +1742,19 @@ function SignalBadge({
   );
 }
 
+function H4PriorityBadge({ priority }: { priority?: H4Priority }) {
+  if (!priority || priority === 'WATCH') {
+    return <span className="priority-watch">H4 等待</span>;
+  }
+  const isLong = priority === 'P0-LONG';
+  return (
+    <Badge className={`priority-badge ${isLong ? 'long' : 'short'}`}>
+      <Zap size={12} />
+      P0 4H {isLong ? '多头' : '空头'}
+    </Badge>
+  );
+}
+
 function SectionHeading({
   kicker,
   title,
@@ -1769,6 +1795,9 @@ function ScanTable({
 }) {
   const isV321 = strategy === 'rank-v321';
   const isV32 = strategy === 'rank-v32' || isV321;
+  const h4PriorityCount = rows.filter(
+    (item) => item.h4Priority && item.h4Priority !== 'WATCH',
+  ).length;
   return (
     <Card className="table-card">
       <div className="table-scroll">
@@ -1777,6 +1806,7 @@ function ScanTable({
             <tr>
               <th>标的</th>
               <th>{isV32 ? '24H 强弱（4H）' : '4H 强弱'}</th>
+              {isV32 && <th>4H 优先级</th>}
               <th>信号</th>
               <th>信号分</th>
               <th>理论开单</th>
@@ -1823,6 +1853,11 @@ function ScanTable({
                     {item.change.toFixed(2)}%
                   </span>
                 </td>
+                {isV32 && (
+                  <td>
+                    <H4PriorityBadge priority={item.h4Priority} />
+                  </td>
+                )}
                 <td>
                   <SignalBadge signal={item.signal} strength={item.strength} />
                 </td>
@@ -1881,6 +1916,7 @@ function ScanTable({
               ? '正在整理扫描范围'
               : '点击标的查看详情'}
         </span>
+        {isV32 && <span>P0 4H ${h4PriorityCount} 个 · P1 = 15m 闭合排单</span>}
       </div>
     </Card>
   );
@@ -1908,7 +1944,7 @@ function StrongestSignals({
           <Zap size={14} />
         </span>
         <div>
-          <strong>最强信号 S+</strong>
+          <strong>{isV32 ? 'P1 15m 标准排单 · S+' : '最强信号 S+'}</strong>
           <small>
             {isV32
               ? `${isV321 ? 'V32.1' : 'V32'}：已收盘 4H / 1H 通过后，下一根 15m 开盘`
@@ -1925,7 +1961,14 @@ function StrongestSignals({
           {strongest.map((item) => (
             <span className="elite-signal" key={item.symbol}>
               <b>{item.name}</b>
-              <span>{item.signal === 'LONG' ? '强多' : '强空'}</span>
+              <span>
+                {item.h4Priority === 'P0-LONG' ||
+                item.h4Priority === 'P0-SHORT'
+                  ? 'P0 → P1'
+                  : item.signal === 'LONG'
+                    ? '标准多头'
+                    : '标准空头'}
+              </span>
               <em>{item.score}</em>
               <small>
                 开单 {formatChinaTimeShort(item.closedAt)} ·{' '}
@@ -2538,6 +2581,17 @@ function ScannerPage({
                       </em>
                     </div>
                     <div>
+                      <span>4H 最高优先级</span>
+                      <strong>
+                        {selected.h4Priority === 'P0-LONG'
+                          ? 'P0 多头方向已授权'
+                          : selected.h4Priority === 'P0-SHORT'
+                            ? 'P0 空头方向已授权'
+                            : 'P0 等待'}
+                      </strong>
+                      <em>仅代表 4H 趋势许可，不构成开仓</em>
+                    </div>
+                    <div>
                       <span>1H / 15m</span>
                       <strong>
                         {selected.setup?.split(' · ').slice(1).join(' · ') ??
@@ -2572,8 +2626,11 @@ function ScannerPage({
                 )}
                 {isV32
                   ? selected.signal === 'WAIT'
-                    ? `${isV321 ? 'V32.1' : 'V32'} 当前没有完整的 4H → 1H → 15m 闭合条件；${isV321 ? '量比还必须达到 1.0x。' : ''}不把高分或强弱排名当作开单理由。`
-                    : `${isV321 ? 'V32.1' : 'V32'} 闭合信号：4H 与 1H 均已收盘确认，理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。止损和分批止盈仅是研究参考，不代表自动开仓。`
+                    ? selected.h4Priority === 'P0-LONG' ||
+                        selected.h4Priority === 'P0-SHORT'
+                      ? `P0 4H 方向已授权，但尚未形成 P1 15m 标准排单；继续等待 1H 结构、15m 已收盘触发和${isV321 ? ' ≥ 1.0x 量比' : '成交量'}确认。`
+                      : `${isV321 ? 'V32.1' : 'V32'} 当前没有完整的 4H → 1H → 15m 闭合条件；${isV321 ? '量比还必须达到 1.0x。' : ''}不把高分或强弱排名当作开单理由。`
+                    : `${selected.h4Priority === 'P0-LONG' || selected.h4Priority === 'P0-SHORT' ? 'P0 → P1 闭合：' : 'P1 15m 标准排单：'}4H 与 1H 均已收盘确认，理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。止损和分批止盈仅是研究参考，不代表自动开仓。`
                   : selected.strength === 'S+'
                     ? `S+ 最强信号：排名、趋势、VWAP 与成交量一致；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。已过开盘就等待新收盘，不追价。`
                     : selected.signal === 'WAIT'
@@ -3794,7 +3851,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
       <SectionHeading
         kicker="Alert center"
         title="告警中心"
-        description="只发送研究信号与系统状态，不执行订单；Telegram 仍需由你配置。"
+        description="P0 只提示已收盘 4H 的最高优先级方向；P1 只在 15m 完整闭合时生成标准排单提醒。不会自动下单。"
       />
       <div className="alert-grid">
         <Card className="telegram-card">
@@ -3805,7 +3862,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
               </span>
               <div>
                 <CardTitle>Telegram 通知</CardTitle>
-                <CardDescription>信号确认后发送到指定频道</CardDescription>
+                <CardDescription>P0 方向预警 + P1 15m 标准排单</CardDescription>
               </div>
             </div>
           </CardHeader>
@@ -3816,7 +3873,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
                 <strong>{enabled ? '研究告警已启用' : '研究告警已暂停'}</strong>
                 <small>
                   {enabled
-                    ? '当前仅模拟发送，不含交易指令。'
+                    ? 'P0 为 4H 趋势许可；P1 才包含下一根 15m 开盘、止损与分批退出参考。'
                     : '重新开启后才会生成通知。'}
                 </small>
               </div>
@@ -3859,23 +3916,23 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
           <CardContent>
             <div className="event-row">
               <span className="event-icon green">
-                <Check size={14} />
+                <Zap size={14} />
               </span>
               <div>
-                <strong>扫描完成</strong>
-                <small>6 个候选标的 · 每 60 秒自动更新</small>
+                <strong>P0 · 4H 最高优先级</strong>
+                <small>仅限强弱排名第一/末位、4H 趋势与 ADX ≥ 22 的已收盘方向；只预警，不开仓。</small>
               </div>
-              <span className="event-tag">正常</span>
+              <span className="event-tag">方向许可</span>
             </div>
             <div className="event-row">
               <span className="event-icon amber">
-                <AlertTriangle size={14} />
+                <Target size={14} />
               </span>
               <div>
-                <strong>成本模型缺失</strong>
-                <small>回测尚未计手续费、滑点和资金费率</small>
+                <strong>P1 · 15m 标准排单</strong>
+                <small>4H / 1H / 15m 均已收盘，触发量比合格后才提示；内容包含理论下一根开盘、止损、TP1 与 TP2。</small>
               </div>
-              <span className="event-tag warn">待处理</span>
+              <span className="event-tag warn">执行观察</span>
             </div>
             <div className="event-row">
               <span className="event-icon slate">
