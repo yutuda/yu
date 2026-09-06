@@ -1367,10 +1367,10 @@ const performance = [
 
 const navItems: Array<{ label: Page; icon: typeof LayoutDashboard }> = [
   { label: '总览', icon: LayoutDashboard },
+  { label: '策略版本', icon: SlidersHorizontal },
   { label: '市场扫描', icon: Search },
   { label: '回测实验室', icon: FlaskConical },
   { label: '杠杆压力测试', icon: ShieldCheck },
-  { label: '策略版本', icon: SlidersHorizontal },
   { label: '告警中心', icon: Bell },
 ];
 
