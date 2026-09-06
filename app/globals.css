@@ -275,6 +275,25 @@ tbody tr:hover,tbody tr.row-selected { background:#0b202b; }
 .priority-watch { color:#526b77; }
 .score-cell,.score-elite { color:#7f97a2; background:#10212a; }
 .score-elite { color:#51dcf9; background:#0d2c38; }
+.holding-badge {
+  display:inline-flex;
+  align-items:center;
+  gap:5px;
+  white-space:nowrap;
+  border:1px solid #1b3a47;
+  border-radius:999px;
+  padding:5px 8px;
+  color:#8aa0aa;
+  background:#0b1b24;
+  font-size:11px;
+  font-weight:700;
+}
+.holding-badge.quick { color:#9eb4be; border-color:#29414c; background:#101d24; }
+.holding-badge.intraday { color:#59d6f2; border-color:#1a6278; background:#0b2a36; }
+.holding-badge.swing { color:#59dfa3; border-color:#22684f; background:#0b2b21; box-shadow:0 0 16px rgba(70,211,150,.1); }
+.holding-badge.wait { color:#6c818b; border-color:#253943; background:#0d171d; }
+.holding-window-cell { color:#91a8b2; font-family:var(--font-geist-mono),monospace; white-space:nowrap; }
+.elite-holding { color:#4fcfe9 !important; }
 
 .elite-strip {
   border-color:#17667d;

@@ -60,6 +60,7 @@ import {
 type Signal = 'LONG' | 'SHORT' | 'WAIT';
 type SignalStrength = 'S+' | 'S' | 'A' | 'WATCH';
 type H4Priority = 'P0-LONG' | 'P0-SHORT' | 'WATCH';
+type HoldingStage = 'WAIT' | 'QUICK' | 'INTRADAY' | 'SWING';
 type AssetClass = 'US_STOCK' | 'CRYPTO';
 type DataState = 'loading' | 'live' | 'error';
 type Instrument = {
@@ -87,6 +88,12 @@ type Instrument = {
   tp2?: string;
   trail?: string;
   h4Priority?: H4Priority;
+  h1Trend?: Signal;
+  h4Trend?: Signal;
+  holdingStage?: HoldingStage;
+  holdingWindow?: string;
+  holdingReason?: string;
+  holdingUpgrade?: string;
 };
 type ScanStats = {
   total: number;
@@ -711,9 +718,17 @@ async function loadLiveInstrumentsV31() {
     universe,
     async (instrument) => {
       const { symbol, name, assetClass } = instrument;
-      const candles = await fetchGateJson<GateCandle[]>(
-        `/candlesticks?contract=${encodeURIComponent(symbol)}&interval=15m&limit=220`,
-      );
+      const [candles, raw1h, raw4h] = await Promise.all([
+        fetchGateJson<GateCandle[]>(
+          `/candlesticks?contract=${encodeURIComponent(symbol)}&interval=15m&limit=220`,
+        ),
+        fetchGateJson<GateCandle[]>(
+          `/candlesticks?contract=${encodeURIComponent(symbol)}&interval=1h&limit=220`,
+        ).catch(() => [] as GateCandle[]),
+        fetchGateJson<GateCandle[]>(
+          `/candlesticks?contract=${encodeURIComponent(symbol)}&interval=4h&limit=220`,
+        ).catch(() => [] as GateCandle[]),
+      ]);
       const closed = candles
         .filter((candle) => Number(candle.t) < currentCandleStart)
         .sort((a, b) => Number(a.t) - Number(b.t));
@@ -768,7 +783,54 @@ async function loadLiveInstrumentsV31() {
           ? 'LONG'
           : latestClose < ema20 && ema20 < ema50 && ema50Slope < 0
             ? 'SHORT'
-            : 'WAIT';
+              : 'WAIT';
+      let h1Trend: Signal = 'WAIT';
+      let h4Trend: Signal = 'WAIT';
+      let h4Adx = 0;
+      let regimeClosedAt: number | undefined;
+      try {
+        const tf1h = calculateTimeframeSnapshot(
+          closedLiveCandles(raw1h, 60 * 60),
+          4,
+          6,
+          false,
+        );
+        const tf4h = calculateTimeframeSnapshot(
+          closedLiveCandles(raw4h, 4 * 60 * 60),
+          3,
+          6,
+          false,
+        );
+        h1Trend =
+          tf1h.latest.close > tf1h.ema20 &&
+          tf1h.ema20 > tf1h.ema50 &&
+          tf1h.ema50Slope > 0 &&
+          tf1h.plusDi > tf1h.minusDi
+            ? 'LONG'
+            : tf1h.latest.close < tf1h.ema20 &&
+                tf1h.ema20 < tf1h.ema50 &&
+                tf1h.ema50Slope < 0 &&
+                tf1h.minusDi > tf1h.plusDi
+              ? 'SHORT'
+              : 'WAIT';
+        h4Trend =
+          tf4h.latest.close > tf4h.ema50 &&
+          tf4h.ema50 > tf4h.ema200 &&
+          tf4h.ema50Slope > 0 &&
+          tf4h.plusDi > tf4h.minusDi
+            ? 'LONG'
+            : tf4h.latest.close < tf4h.ema50 &&
+                tf4h.ema50 < tf4h.ema200 &&
+                tf4h.ema50Slope < 0 &&
+                tf4h.minusDi > tf4h.plusDi
+              ? 'SHORT'
+              : 'WAIT';
+        h4Adx = tf4h.adx;
+        regimeClosedAt = tf4h.latest.time + 4 * 60 * 60;
+      } catch {
+        // Higher-timeframe context is optional: V31's original 15m signal
+        // remains available even when Gate cannot provide enough 1H/4H bars.
+      }
 
       return {
         symbol,
@@ -783,6 +845,10 @@ async function loadLiveInstrumentsV31() {
         vwapValue: vwap,
         volumeRatio,
         trend,
+        h1Trend,
+        h4Trend,
+        h4Adx,
+        regimeClosedAt,
       };
     },
     6,
@@ -834,6 +900,50 @@ async function loadLiveInstrumentsV31() {
             : score >= 75
               ? 'S'
               : 'A';
+      const intradayQualified =
+        signal !== 'WAIT' &&
+        score >= 75 &&
+        trendAligned &&
+        item.volumeRatio >= 1 &&
+        item.h1Trend === signal;
+      const swingQualified =
+        intradayQualified &&
+        score >= 88 &&
+        item.volumeRatio >= 1.1 &&
+        item.h4Trend === signal &&
+        item.h4Adx >= 18;
+      const holdingStage: HoldingStage =
+        signal === 'WAIT'
+          ? 'WAIT'
+          : swingQualified
+            ? 'SWING'
+            : intradayQualified
+              ? 'INTRADAY'
+              : 'QUICK';
+      const holdingWindow =
+        holdingStage === 'SWING'
+          ? '8–48h'
+          : holdingStage === 'INTRADAY'
+            ? '2–8h'
+            : holdingStage === 'QUICK'
+              ? '30m–2h'
+              : '等待新信号';
+      const holdingReason =
+        holdingStage === 'SWING'
+          ? 'S+ 高分、量能达标，且已收盘 1H / 4H 与 V31 同向'
+          : holdingStage === 'INTRADAY'
+            ? 'V31 高分、量能达标，已收盘 1H 同向'
+            : holdingStage === 'QUICK'
+              ? '仅按 V31 原始 15m 信号管理，尚未通过高周期升级'
+              : '当前没有方向性开单信号';
+      const holdingUpgrade =
+        holdingStage === 'SWING'
+          ? '每根 4H 收盘复核；方向反转或触发止损即退出'
+          : holdingStage === 'INTRADAY'
+            ? '4H 收盘同向、ADX ≥ 18、评分 ≥ 88 后升级'
+            : holdingStage === 'QUICK'
+              ? '1H 收盘同向且量比 ≥ 1.0x 后升级'
+              : '等待下一根 15m 收盘重新评分';
       return {
         ...item,
         rank,
@@ -841,6 +951,10 @@ async function loadLiveInstrumentsV31() {
         signal,
         strength,
         score,
+        holdingStage,
+        holdingWindow,
+        holdingReason,
+        holdingUpgrade,
       };
     });
   const rows: Instrument[] = ranked.map((item) => ({
@@ -860,6 +974,13 @@ async function loadLiveInstrumentsV31() {
     vwap: item.vwap,
     volume: item.volume,
     volumeRatio: item.volumeRatio,
+    regimeClosedAt: item.regimeClosedAt,
+    h1Trend: item.h1Trend,
+    h4Trend: item.h4Trend,
+    holdingStage: item.holdingStage,
+    holdingWindow: item.holdingWindow,
+    holdingReason: item.holdingReason,
+    holdingUpgrade: item.holdingUpgrade,
   }));
 
   return {
@@ -1512,6 +1633,72 @@ function H4PriorityBadge({ priority }: { priority?: H4Priority }) {
   );
 }
 
+function getHoldingProfile(item: Instrument, strategy: StrategyKey) {
+  if (item.holdingStage && item.holdingWindow) {
+    return {
+      stage: item.holdingStage,
+      label:
+        item.holdingStage === 'SWING'
+          ? '波段候选'
+          : item.holdingStage === 'INTRADAY'
+            ? '日内延长'
+            : item.holdingStage === 'QUICK'
+              ? '快速单'
+              : '等待',
+      window: item.holdingWindow,
+      reason: item.holdingReason ?? '等待条件确认',
+      upgrade: item.holdingUpgrade ?? '等待下一次收盘复核',
+    };
+  }
+  if (
+    strategy === 'rank-v32' ||
+    strategy === 'rank-v321'
+  ) {
+    const isP0 =
+      item.h4Priority === 'P0-LONG' || item.h4Priority === 'P0-SHORT';
+    return isP0
+      ? {
+          stage: 'SWING' as const,
+          label: '波段候选',
+          window: '8–48h',
+          reason: '4H P0 已收盘确认',
+          upgrade: '每根 4H 收盘复核并执行跟踪退出',
+        }
+      : item.signal !== 'WAIT'
+        ? {
+            stage: 'INTRADAY' as const,
+            label: '日内延长',
+            window: '2–8h',
+            reason: '多周期 P1 已确认',
+            upgrade: '等待独立 P0 4H 信号，不自动延长',
+          }
+        : {
+            stage: 'WAIT' as const,
+            label: '等待',
+            window: '等待新信号',
+            reason: '多周期条件尚未闭合',
+            upgrade: '等待下一根已收盘 K 线',
+          };
+  }
+  return {
+    stage: item.signal === 'WAIT' ? ('WAIT' as const) : ('QUICK' as const),
+    label: item.signal === 'WAIT' ? '等待' : '快速单',
+    window: item.signal === 'WAIT' ? '等待新信号' : '30m–2h',
+    reason: '高周期数据暂不可用，按 V31 原始 15m 信号处理',
+    upgrade: '等待 1H / 4H 收盘数据后再判断升级',
+  };
+}
+
+function HoldingBadge({ item, strategy }: { item: Instrument; strategy: StrategyKey }) {
+  const profile = getHoldingProfile(item, strategy);
+  return (
+    <span className={`holding-badge ${profile.stage.toLowerCase()}`}>
+      <Clock3 size={12} />
+      {profile.label}
+    </span>
+  );
+}
+
 function SectionHeading({
   kicker,
   title,
@@ -1555,6 +1742,10 @@ function ScanTable({
   const h4PriorityCount = rows.filter(
     (item) => item.h4Priority && item.h4Priority !== 'WATCH',
   ).length;
+  const extendedHoldingCount = rows.filter(
+    (item) =>
+      item.holdingStage === 'INTRADAY' || item.holdingStage === 'SWING',
+  ).length;
   return (
     <Card className="table-card">
       <div className="table-scroll">
@@ -1566,6 +1757,8 @@ function ScanTable({
               {isV32 && <th>4H 优先级</th>}
               <th>信号</th>
               <th>信号分</th>
+              <th>持仓阶段</th>
+              <th>观察时长</th>
               <th>理论开单</th>
               <th>最新价</th>
               <th>VWAP 偏离</th>
@@ -1627,6 +1820,12 @@ function ScanTable({
                     {item.score}
                   </span>
                 </td>
+                <td>
+                  <HoldingBadge item={item} strategy={strategy} />
+                </td>
+                <td className="holding-window-cell">
+                  {getHoldingProfile(item, strategy).window}
+                </td>
                 <td className="signal-time-cell">
                   <strong>{formatChinaTimeShort(item.closedAt)}</strong>
                   <small
@@ -1673,7 +1872,11 @@ function ScanTable({
               ? '正在整理扫描范围'
               : '点击标的查看详情'}
         </span>
-        {isV32 && <span>P0 = 4H 开单 ${h4PriorityCount} 个 · P1 = 15m 开单</span>}
+        {isV32 ? (
+          <span>P0 = 4H 开单 {h4PriorityCount} 个 · P1 = 15m 开单</span>
+        ) : (
+          <span>持仓升级 {extendedHoldingCount} 个 · 仅作动态管理参考</span>
+        )}
       </div>
     </Card>
   );
@@ -1731,6 +1934,10 @@ function StrongestSignals({
                 开单 {formatChinaTimeShort(item.closedAt)} ·{' '}
                 {getEntryTiming(item.closedAt, item.signal).label}
               </small>
+              <small className="elite-holding">
+                {getHoldingProfile(item, strategy).label} ·{' '}
+                {getHoldingProfile(item, strategy).window}
+              </small>
             </span>
           ))}
         </div>
@@ -1752,12 +1959,24 @@ function SignalCommandCenter({
 }) {
   const isV32 = strategy === 'rank-v32' || strategy === 'rank-v321';
   const ranked = [...rows].sort((a, b) => b.score - a.score);
-  const strongest = ranked.find((item) => item.strength === 'S+') ?? ranked[0];
+  const strongest =
+    ranked.find((item) => item.strength === 'S+' && item.signal !== 'WAIT') ??
+    ranked.find((item) => item.signal !== 'WAIT') ??
+    ranked[0];
   const p0 = ranked.find(
     (item) =>
       item.h4Priority === 'P0-LONG' || item.h4Priority === 'P0-SHORT',
   );
   const p1 = ranked.find((item) => item.signal !== 'WAIT');
+  const holdCandidate =
+    ranked.find((item) => item.holdingStage === 'SWING') ??
+    ranked.find((item) => item.holdingStage === 'INTRADAY');
+  const strongestHolding = strongest
+    ? getHoldingProfile(strongest, strategy)
+    : null;
+  const candidateHolding = holdCandidate
+    ? getHoldingProfile(holdCandidate, strategy)
+    : null;
 
   const directionLabel = (item?: Instrument) => {
     if (!item) return '等待';
@@ -1798,6 +2017,10 @@ function SignalCommandCenter({
               <Check size={13} /> 最近收盘
               <b>{closedAt ? formatChinaTimeShort(closedAt) : '等待'}</b>
             </span>
+            <span>
+              <Clock3 size={13} /> 持仓阶段
+              <b>{strongestHolding?.label ?? '等待'}</b>
+            </span>
           </div>
         </CardContent>
       </Card>
@@ -1807,29 +2030,50 @@ function SignalCommandCenter({
           <CardContent>
             <div className="priority-title-row">
               <div>
-                <span className="priority-label">P0 · 4H</span>
-                <strong>最高优先级</strong>
+                <span className="priority-label">
+                  {isV32 ? 'P0 · 4H' : 'HOLD · V31'}
+                </span>
+                <strong>{isV32 ? '最高优先级' : '持仓升级'}</strong>
               </div>
               <SignalBadge
                 signal={
-                  p0?.h4Priority === 'P0-LONG'
-                    ? 'LONG'
-                    : p0?.h4Priority === 'P0-SHORT'
-                      ? 'SHORT'
-                      : 'WAIT'
+                  isV32
+                    ? p0?.h4Priority === 'P0-LONG'
+                      ? 'LONG'
+                      : p0?.h4Priority === 'P0-SHORT'
+                        ? 'SHORT'
+                        : 'WAIT'
+                    : holdCandidate?.signal ?? 'WAIT'
                 }
-                strength={p0?.strength}
+                strength={isV32 ? p0?.strength : holdCandidate?.strength}
               />
             </div>
             <div className="priority-data-grid">
               <span>
-                标的<b>{p0?.symbol ?? '等待 4H 收盘'}</b>
+                标的
+                <b>
+                  {isV32
+                    ? p0?.symbol ?? '等待 4H 收盘'
+                    : holdCandidate?.symbol ?? '暂无升级候选'}
+                </b>
               </span>
               <span>
-                方向<b>{directionLabel(p0)}</b>
+                {isV32 ? '方向' : '阶段'}
+                <b>
+                  {isV32
+                    ? directionLabel(p0)
+                    : candidateHolding?.label ?? '等待'}
+                </b>
               </span>
               <span>
-                置信度<b>{p0 ? `${p0.score}%` : '—'}</b>
+                {isV32 ? '置信度' : '观察时长'}
+                <b>
+                  {isV32
+                    ? p0
+                      ? `${p0.score}%`
+                      : '—'
+                    : candidateHolding?.window ?? '—'}
+                </b>
               </span>
             </div>
           </CardContent>
@@ -1839,7 +2083,7 @@ function SignalCommandCenter({
             <div className="priority-title-row">
               <div>
                 <span className="priority-label">P1 · 15m</span>
-                <strong>次级开单信号</strong>
+                <strong>{isV32 ? '次级开单信号' : 'V31 快速开单'}</strong>
               </div>
               <SignalBadge signal={p1?.signal ?? 'WAIT'} strength={p1?.strength} />
             </div>
@@ -1851,7 +2095,7 @@ function SignalCommandCenter({
                 方向<b>{directionLabel(p1)}</b>
               </span>
               <span>
-                状态<b>{isV32 ? '多周期确认' : '排名确认'}</b>
+                状态<b>{isV32 ? '多周期确认' : '30m–2h 起步'}</b>
               </span>
             </div>
           </CardContent>
@@ -1943,7 +2187,7 @@ function Overview({
               ? 'V32.1 保留 V32 的已收盘多周期结构，只增加均量参与确认和 40% / 30% / 30% 退出。当前样本胜率与 PF 改善，但参数已接触该年度数据，因此只进入冻结前向观察。'
               : isV32
                 ? 'V32 已接入为独立多周期观察版：4H / 1H 条件只读取已收盘 K 线，15m 才负责触发。年度核心 PF 0.849、前半年不稳定，因此当前不具备前向模拟资格。'
-                : 'V31 已替换为主策略：低于 100 万 USDT 成交额或价差超过 0.30% 的合约直接剔除，合格池信号分为 S+、S、A、WATCH；仍需前向数据确认。'}
+                : 'V31 已替换为主策略：低于 100 万 USDT 成交额或价差超过 0.30% 的合约直接剔除。持仓阶段只用于动态管理，未纳入原 V31 回测，不应视为收益承诺。'}
           </span>
         </div>
         <button aria-label="查看风险说明" onClick={() => goTo('策略版本')}>
@@ -2283,6 +2527,9 @@ function ScannerPage({
   const selectedTiming = selected
     ? getEntryTiming(selected.closedAt, selected.signal)
     : null;
+  const selectedHolding = selected
+    ? getHoldingProfile(selected, strategy)
+    : null;
   useEffect(() => {
     if (
       strategyInstruments.length > 0 &&
@@ -2411,6 +2658,36 @@ function ScannerPage({
                     {selected.trend === 'WAIT' ? '未确认' : selected.trend}
                   </strong>
                 </div>
+                {!isV32 && selectedHolding && (
+                  <>
+                    <div>
+                      <span>V31 持仓阶段</span>
+                      <strong>{selectedHolding.label}</strong>
+                      <em>参考观察 {selectedHolding.window}</em>
+                    </div>
+                    <div>
+                      <span>高周期确认</span>
+                      <strong>
+                        1H {selected.h1Trend ?? 'WAIT'} · 4H{' '}
+                        {selected.h4Trend ?? 'WAIT'}
+                      </strong>
+                      <em>
+                        4H 收盘{' '}
+                        {selected.regimeClosedAt
+                          ? `${formatChinaTimeShort(selected.regimeClosedAt)} 北京`
+                          : '数据暂不可用'}
+                      </em>
+                    </div>
+                    <div>
+                      <span>阶段依据</span>
+                      <strong>{selectedHolding.reason}</strong>
+                    </div>
+                    <div>
+                      <span>下一步条件</span>
+                      <strong>{selectedHolding.upgrade}</strong>
+                    </div>
+                  </>
+                )}
                 {isV32 && (
                   <>
                     <div>
@@ -2476,7 +2753,7 @@ function ScannerPage({
                       : `${isV321 ? 'V32.1' : 'V32'} 当前没有完整的 4H → 1H → 15m 闭合条件；${isV321 ? '量比还必须达到 1.0x。' : ''}不把高分或强弱排名当作开单理由。`
                     : `${selected.h4Priority === 'P0-LONG' || selected.h4Priority === 'P0-SHORT' ? 'P0 与 P1 同时出现：' : 'P1 15m 次级开单：'}4H 与 1H 均已收盘确认，P1 理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。P0 与 P1 独立计时；止损和分批止盈仅是研究参考，不代表自动开仓。`
                   : selected.strength === 'S+'
-                    ? `S+ 最强信号：排名、趋势、VWAP 与成交量一致；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。已过开盘就等待新收盘，不追价。`
+                    ? `S+ 最强信号：排名、趋势、VWAP 与成交量一致；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。当前为“${selectedHolding?.label}”，参考观察 ${selectedHolding?.window}；已过开盘就等待新收盘，不追价。`
                     : selected.signal === 'WAIT'
                       ? '当前处于观察区，不生成方向性交易信号。'
                       : `方向性条件已满足；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。不代表自动开仓。`}
