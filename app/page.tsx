@@ -1741,6 +1741,126 @@ function StrongestSignals({
   );
 }
 
+function SignalCommandCenter({
+  rows,
+  strategy,
+  closedAt,
+}: {
+  rows: Instrument[];
+  strategy: StrategyKey;
+  closedAt: number | null;
+}) {
+  const isV32 = strategy === 'rank-v32' || strategy === 'rank-v321';
+  const ranked = [...rows].sort((a, b) => b.score - a.score);
+  const strongest = ranked.find((item) => item.strength === 'S+') ?? ranked[0];
+  const p0 = ranked.find(
+    (item) =>
+      item.h4Priority === 'P0-LONG' || item.h4Priority === 'P0-SHORT',
+  );
+  const p1 = ranked.find((item) => item.signal !== 'WAIT');
+
+  const directionLabel = (item?: Instrument) => {
+    if (!item) return '等待';
+    if (item.signal === 'LONG' || item.h4Priority === 'P0-LONG') return '看多';
+    if (item.signal === 'SHORT' || item.h4Priority === 'P0-SHORT') return '看空';
+    return '等待';
+  };
+
+  return (
+    <section className="signal-command-grid" aria-label="最强信号与开单优先级">
+      <Card className="signal-focus-card">
+        <CardHeader>
+          <div className="focus-card-kicker">
+            <Zap size={15} /> 最强信号
+          </div>
+          <CardDescription>
+            {strongest
+              ? `${strongest.name} · ${strongest.symbol}`
+              : '等待实时扫描结果'}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="focus-grade">{strongest?.strength ?? '—'}</div>
+          <div className="focus-score-row">
+            <span>综合评分</span>
+            <strong>{strongest ? `${strongest.score} / 99` : '—'}</strong>
+          </div>
+          <div className="focus-checks">
+            <span>
+              <Check size={13} /> 方向一致性
+              <b>{directionLabel(strongest)}</b>
+            </span>
+            <span>
+              <Check size={13} /> 流动性
+              <b>合格</b>
+            </span>
+            <span>
+              <Check size={13} /> 最近收盘
+              <b>{closedAt ? formatChinaTimeShort(closedAt) : '等待'}</b>
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="priority-stack">
+        <Card className="priority-panel priority-p0">
+          <CardContent>
+            <div className="priority-title-row">
+              <div>
+                <span className="priority-label">P0 · 4H</span>
+                <strong>最高优先级</strong>
+              </div>
+              <SignalBadge
+                signal={
+                  p0?.h4Priority === 'P0-LONG'
+                    ? 'LONG'
+                    : p0?.h4Priority === 'P0-SHORT'
+                      ? 'SHORT'
+                      : 'WAIT'
+                }
+                strength={p0?.strength}
+              />
+            </div>
+            <div className="priority-data-grid">
+              <span>
+                标的<b>{p0?.symbol ?? '等待 4H 收盘'}</b>
+              </span>
+              <span>
+                方向<b>{directionLabel(p0)}</b>
+              </span>
+              <span>
+                置信度<b>{p0 ? `${p0.score}%` : '—'}</b>
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+        <Card className="priority-panel priority-p1">
+          <CardContent>
+            <div className="priority-title-row">
+              <div>
+                <span className="priority-label">P1 · 15m</span>
+                <strong>次级开单信号</strong>
+              </div>
+              <SignalBadge signal={p1?.signal ?? 'WAIT'} strength={p1?.strength} />
+            </div>
+            <div className="priority-data-grid">
+              <span>
+                标的<b>{p1?.symbol ?? '等待 15m 收盘'}</b>
+              </span>
+              <span>
+                方向<b>{directionLabel(p1)}</b>
+              </span>
+              <span>
+                状态<b>{isV32 ? '多周期确认' : '排名确认'}</b>
+              </span>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    </section>
+  );
+}
+
 function Overview({
   goTo,
   setToast,
@@ -1809,6 +1929,11 @@ function Overview({
           </Button>
         </div>
       </section>
+      <SignalCommandCenter
+        rows={strategyInstruments}
+        strategy={strategy}
+        closedAt={closedAt}
+      />
       <div className="risk-banner">
         <AlertTriangle size={17} />
         <div>
