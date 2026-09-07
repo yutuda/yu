@@ -1,0 +1,40 @@
+{
+  "strategy": "V33 First Pullback Reclaim",
+  "period": {
+    "start": "2025-09-02T15:30:00Z",
+    "end": "2026-09-02T15:30:00Z",
+    "warmup_days": 35
+  },
+  "data": "40 Bybit USDT perpetual 15m proxies; not Gate fills or US stock spot validation",
+  "execution": "next-bar open; zero fees, slippage and funding; same-bar stop first",
+  "account": {
+    "initial_usdt": 500,
+    "planned_risk_per_trade_pct": 5,
+    "max_gross_leverage": 10,
+    "max_positions": 4,
+    "max_same_direction": 2
+  },
+  "full": {
+    "trades": 258,
+    "trades_per_day": 0.7818,
+    "win_rate_pct": 51.163,
+    "profit_factor": 1.157,
+    "compound_return_pct": 149.984,
+    "max_closed_equity_drawdown_pct": -43.016
+  },
+  "second_half": {
+    "trades": 129,
+    "trades_per_day": 0.7818,
+    "win_rate_pct": 50.388,
+    "profit_factor": 1.1895,
+    "compound_return_pct": 72.311,
+    "max_closed_equity_drawdown_pct": -40.274
+  },
+  "target": {
+    "win_rate_pct": 65,
+    "profit_factor": 1.6,
+    "trades_per_day": 2
+  },
+  "passed": false,
+  "warning": "The compound result is a high-risk zero-cost illustration and is not an expected return."
+}

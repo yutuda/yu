@@ -64,8 +64,11 @@ type HoldingStage = 'WAIT' | 'QUICK' | 'INTRADAY' | 'SWING';
 type EntryState =
   | 'READY'
   | 'OVEREXTENDED'
+  | 'WAIT_BREAKOUT'
   | 'WAIT_PULLBACK'
   | 'WAIT_CONFIRM'
+  | 'INVALIDATED'
+  | 'EXPIRED'
   | 'NO_BIAS';
 type AssetClass = 'US_STOCK' | 'CRYPTO';
 type DataState = 'loading' | 'live' | 'error';
@@ -86,7 +89,7 @@ type Instrument = {
   vwap: string;
   volume: string;
   volumeRatio: number;
-  timeframe?: 'V31' | 'V32' | 'V32.1';
+  timeframe?: 'V31' | 'V32' | 'V32.1' | 'V33';
   regimeClosedAt?: number;
   setup?: string;
   stop?: string;
@@ -120,6 +123,7 @@ type Page =
   | '策略版本'
   | '告警中心';
 type StrategyKey =
+  | 'rank-v33'
   | 'rank-v321'
   | 'rank-v32'
   | 'rank-v31'
@@ -137,6 +141,15 @@ const strategyCatalog: Record<
     mode: string;
   }
 > = {
+  'rank-v33': {
+    name: 'First Pullback Reclaim',
+    version: 'v33',
+    source: 'Gate V33 First Pullback',
+    market: '流动性合格美股永续 + 主流加密 · Gate Public API',
+    summary:
+      '顺势首次回踩：先突破 12 根整理区，再等第一次回踩与收盘重夺；趋势方向和现在能否开单完全分开。',
+    mode: '目标未通过 · 独立研究观察',
+  },
   'rank-v321': {
     name: 'Participation-Confirmed MTF Runner',
     version: 'v32.1',
@@ -185,6 +198,18 @@ const strategyMetrics: Record<
     exits: Array<{ name: string; value: number }>;
   }
 > = {
+  'rank-v33': {
+    trades: 258,
+    compound: '+149.98%*',
+    profitFactor: '1.157',
+    winRate: '51.16%',
+    drawdown: '-43.02%',
+    exits: [
+      { name: '目标 1.2R', value: 117 },
+      { name: '结构止损', value: 118 },
+      { name: '4h 时间退出', value: 23 },
+    ],
+  },
   'rank-v321': {
     trades: 76,
     compound: '+7.61%',
@@ -308,6 +333,27 @@ const v321AnnualValidation = {
     broad: '前半年等风险 PF 1.381（186 笔） / 后半年 1.333（173 笔）',
   },
   quarterlyRiskProfitFactors: '1.325 / 1.464 / 1.724 / 1.066（全篮子）',
+};
+
+const v33AnnualValidation = {
+  period: '2025-09-02 至 2026-09-02 · 365 天 · 15m / 已收盘 1H、4H',
+  source: '40 个 Bybit USDT 永续公开 K 线代理；不是 Gate 成交或美股现货验证',
+  decision: 'FAIL · 未达到 65% / 1.6 / 每天 2 笔，独立研究观察',
+  full: {
+    trades: 258,
+    tradesPerDay: '0.78',
+    profitFactor: '1.157',
+    winRate: '51.16%',
+    compound: '+149.98%*',
+    drawdown: '-43.02%',
+  },
+  secondHalf: {
+    trades: 129,
+    tradesPerDay: '0.78',
+    profitFactor: '1.190',
+    winRate: '50.39%',
+  },
+  target: '胜率 ≥ 65% · PF ≥ 1.6 · 账户成交 ≥ 2 笔/天',
 };
 
 const initialInstruments: Instrument[] = [
@@ -641,6 +687,195 @@ function ema(values: number[], span: number) {
   );
 }
 
+function candleAtr(candles: GateCandle[], index: number) {
+  const start = Math.max(1, index - 14);
+  const ranges: number[] = [];
+  for (let cursor = start; cursor <= index; cursor += 1) {
+    const candle = candles[cursor];
+    const previousClose = Number(candles[cursor - 1].c);
+    ranges.push(
+      Math.max(
+        Number(candle.h) - Number(candle.l),
+        Math.abs(Number(candle.h) - previousClose),
+        Math.abs(Number(candle.l) - previousClose),
+      ),
+    );
+  }
+  return ranges.length
+    ? ranges.reduce((sum, value) => sum + value, 0) / ranges.length
+    : Number.NaN;
+}
+
+function evaluateV33Entry(
+  candles: GateCandle[],
+  direction: Signal,
+  rank: number,
+  universeSize: number,
+  h1Trend: Signal,
+  h4Trend: Signal,
+  volumeRatio: number,
+  vwap: number,
+) {
+  const latestIndex = candles.length - 1;
+  if (direction === 'WAIT') {
+    return {
+      signal: 'WAIT' as Signal,
+      state: 'NO_BIAS' as EntryState,
+      reason: '未进入前/后 10 名候选区',
+      extensionAtr: 0,
+    };
+  }
+  const sign = direction === 'LONG' ? 1 : -1;
+  const finalRank = sign === 1 ? rank <= 5 : rank > universeSize - 5;
+  let latestTerminal: EntryState | undefined;
+
+  for (
+    let breakout = latestIndex - 1;
+    breakout >= Math.max(15, latestIndex - 12);
+    breakout -= 1
+  ) {
+    const prior = candles.slice(breakout - 12, breakout);
+    const level =
+      sign === 1
+        ? Math.max(...prior.map((candle) => Number(candle.h)))
+        : Math.min(...prior.map((candle) => Number(candle.l)));
+    const breakoutClose = Number(candles[breakout].c);
+    if (
+      (sign === 1 && breakoutClose <= level) ||
+      (sign === -1 && breakoutClose >= level)
+    ) {
+      continue;
+    }
+
+    let pullback = -1;
+    let pullbackExtreme = sign === 1 ? Infinity : -Infinity;
+    let terminal = false;
+    for (let cursor = breakout + 1; cursor <= latestIndex; cursor += 1) {
+      const candle = candles[cursor];
+      const atr = candleAtr(candles, cursor);
+      const close = Number(candle.c);
+      const invalid =
+        sign === 1 ? close < level - 0.25 * atr : close > level + 0.25 * atr;
+      if (invalid) {
+        if (cursor === latestIndex) latestTerminal = 'INVALIDATED';
+        terminal = true;
+        break;
+      }
+      if (cursor - breakout > 12) {
+        if (cursor === latestIndex) latestTerminal = 'EXPIRED';
+        terminal = true;
+        break;
+      }
+      if (pullback < 0) {
+        const touched =
+          sign === 1
+            ? Number(candle.l) <= level + 0.35 * atr
+            : Number(candle.h) >= level - 0.35 * atr;
+        if (!touched) {
+          if (cursor === latestIndex) {
+            return {
+              signal: 'WAIT' as Signal,
+              state: 'WAIT_PULLBACK' as EntryState,
+              reason: `突破已成立，等待第一次回踩 ${formatMarketNumber(level)}`,
+              extensionAtr: Math.max(0, (sign * (close - level)) / atr),
+            };
+          }
+          continue;
+        }
+        pullback = cursor;
+        pullbackExtreme = sign === 1 ? Number(candle.l) : Number(candle.h);
+        if (cursor === latestIndex) {
+          return {
+            signal: 'WAIT' as Signal,
+            state: 'WAIT_CONFIRM' as EntryState,
+            reason: '第一次回踩已出现，至少等待下一根 15m 收盘确认',
+            extensionAtr: Math.max(0, (sign * (close - level)) / atr),
+          };
+        }
+        continue;
+      }
+
+      pullbackExtreme =
+        sign === 1
+          ? Math.min(pullbackExtreme, Number(candle.l))
+          : Math.max(pullbackExtreme, Number(candle.h));
+      if (cursor - pullback > 3) {
+        if (cursor === latestIndex) latestTerminal = 'EXPIRED';
+        terminal = true;
+        break;
+      }
+      if (cursor !== latestIndex) continue;
+
+      const previous = candles[cursor - 1];
+      const trigger =
+        sign === 1
+          ? close > Number(previous.h) && close > Number(candle.o)
+          : close < Number(previous.l) && close < Number(candle.o);
+      const extensionAtr = Math.max(0, (sign * (close - level)) / atr);
+      const recentThree = candles.slice(cursor - 2, cursor + 1);
+      const sameColor = recentThree.every((item) =>
+        sign === 1
+          ? Number(item.c) > Number(item.o)
+          : Number(item.c) < Number(item.o),
+      );
+      const impulse =
+        sameColor &&
+        (sign === 1
+          ? (close - Number(recentThree[0].o)) / atr
+          : (Number(recentThree[0].o) - close) / atr) > 1.8;
+      const aligned =
+        h1Trend === direction && h4Trend !== (sign === 1 ? 'SHORT' : 'LONG');
+      const quality =
+        finalRank &&
+        aligned &&
+        volumeRatio >= 0.8 &&
+        extensionAtr <= 0.8 &&
+        !impulse &&
+        (sign === 1 ? close >= vwap : close <= vwap);
+      if (trigger && quality) {
+        const stop =
+          sign === 1
+            ? pullbackExtreme - 0.1 * atr
+            : pullbackExtreme + 0.1 * atr;
+        const risk = Math.max(1.25 * atr, sign * (close - stop));
+        return {
+          signal: direction,
+          state: 'READY' as EntryState,
+          reason: `首次回踩确认完成，距突破位 ${extensionAtr.toFixed(2)} ATR`,
+          extensionAtr,
+          stop: close - sign * risk,
+          tp1: close + sign * risk * 1.2,
+        };
+      }
+      return {
+        signal: 'WAIT' as Signal,
+        state:
+          extensionAtr > 0.8 || impulse
+            ? ('OVEREXTENDED' as EntryState)
+            : ('WAIT_CONFIRM' as EntryState),
+        reason:
+          extensionAtr > 0.8 || impulse
+            ? `距突破位 ${extensionAtr.toFixed(2)} ATR 或连续脉冲过强，禁止追单`
+            : '首次回踩存在，等待重新突破、前/后 5 名、1H 与量能共同确认',
+        extensionAtr,
+      };
+    }
+    if (!terminal) break;
+  }
+
+  return {
+    signal: 'WAIT' as Signal,
+    state: latestTerminal ?? ('WAIT_BREAKOUT' as EntryState),
+    reason:
+      latestTerminal === 'INVALIDATED'
+        ? '候选已跌回整理区，等待新的完整突破'
+        : latestTerminal === 'EXPIRED'
+          ? '首次回踩窗口已过期，等待新的完整突破'
+          : '方向候选成立，等待新的 12 根整理区突破',
+    extensionAtr: 0,
+  };
+}
+
 function formatContractName(symbol: string) {
   return (
     FRIENDLY_NAMES[symbol] ??
@@ -720,7 +955,10 @@ async function mapWithConcurrency<T, R>(
   return results.filter((value): value is R => value !== undefined);
 }
 
-async function loadLiveInstrumentsV31() {
+async function loadLiveInstrumentsV31(
+  strategy: 'rank-v31' | 'rank-v33' = 'rank-v31',
+) {
+  const isV33 = strategy === 'rank-v33';
   const { tickerMap, universe, excluded } = await loadEligibleUniverse();
   const currentCandleStart = Math.floor(Date.now() / 900_000) * 900;
 
@@ -795,7 +1033,7 @@ async function loadLiveInstrumentsV31() {
           ? 'LONG'
           : latestClose < ema20 && ema20 < ema50 && ema50Slope < 0
             ? 'SHORT'
-              : 'WAIT';
+            : 'WAIT';
       const pullbackWindow = closed.slice(-4, -1);
       const recentThree = closed.slice(-3);
       const recentPullbackLong = pullbackWindow.some(
@@ -897,6 +1135,7 @@ async function loadLiveInstrumentsV31() {
         extensionShort,
         impulseLong,
         impulseShort,
+        closedCandles: closed,
       };
     },
     6,
@@ -907,14 +1146,17 @@ async function loadLiveInstrumentsV31() {
     5,
     Math.max(3, Math.floor(calculated.length / 4)),
   );
+  const setupBand = isV33
+    ? Math.min(10, Math.max(5, Math.floor(calculated.length / 2)))
+    : signalBand;
   const ranked = calculated
     .sort((a, b) => b.change - a.change)
     .map((item, index, all) => {
       const rank = index + 1;
       const bias: Signal =
-        rank <= signalBand
+        rank <= setupBand
           ? 'LONG'
-          : rank > all.length - signalBand
+          : rank > all.length - setupBand
             ? 'SHORT'
             : 'WAIT';
       const edge =
@@ -974,16 +1216,30 @@ async function loadLiveInstrumentsV31() {
             : false;
       const overextended = bias !== 'WAIT' && (extensionAtr > 0.8 || isImpulse);
       const confirmed = trendAligned && vwapAligned && item.volumeRatio >= 0.8;
-      const signal: Signal =
-        bias !== 'WAIT' &&
-        !overextended &&
-        hasPullback &&
-        hasFreshBreak &&
-        confirmed
+      const v33Entry = isV33
+        ? evaluateV33Entry(
+            item.closedCandles,
+            bias,
+            rank,
+            all.length,
+            item.h1Trend,
+            item.h4Trend,
+            item.volumeRatio,
+            item.vwapValue,
+          )
+        : undefined;
+      const signal: Signal = v33Entry
+        ? v33Entry.signal
+        : bias !== 'WAIT' &&
+            !overextended &&
+            hasPullback &&
+            hasFreshBreak &&
+            confirmed
           ? bias
           : 'WAIT';
-      const entryState: EntryState =
-        bias === 'WAIT'
+      const entryState: EntryState = v33Entry
+        ? v33Entry.state
+        : bias === 'WAIT'
           ? 'NO_BIAS'
           : overextended
             ? 'OVEREXTENDED'
@@ -992,8 +1248,9 @@ async function loadLiveInstrumentsV31() {
               : !hasFreshBreak || !confirmed
                 ? 'WAIT_CONFIRM'
                 : 'READY';
-      const entryReason =
-        entryState === 'READY'
+      const entryReason = v33Entry
+        ? v33Entry.reason
+        : entryState === 'READY'
           ? `回踩后重新突破，距 EMA20 ${extensionAtr.toFixed(2)} ATR`
           : entryState === 'OVEREXTENDED'
             ? `距 EMA20 ${extensionAtr.toFixed(2)} ATR 或连续脉冲过强，禁止追单`
@@ -1054,13 +1311,16 @@ async function loadLiveInstrumentsV31() {
         bias,
         entryState,
         entryReason,
-        extensionAtr,
+        extensionAtr: v33Entry?.extensionAtr ?? extensionAtr,
         strength,
         score,
         holdingStage,
         holdingWindow,
         holdingReason,
         holdingUpgrade,
+        timeframe: isV33 ? ('V33' as const) : ('V31' as const),
+        stop: v33Entry?.stop ? formatMarketNumber(v33Entry.stop) : undefined,
+        tp1: v33Entry?.tp1 ? formatMarketNumber(v33Entry.tp1) : undefined,
       };
     });
   const rows: Instrument[] = ranked.map((item) => ({
@@ -1507,7 +1767,7 @@ async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
 async function loadLiveInstruments(strategy: StrategyKey) {
   return strategy === 'rank-v32' || strategy === 'rank-v321'
     ? loadLiveInstrumentsV32(strategy)
-    : loadLiveInstrumentsV31();
+    : loadLiveInstrumentsV31(strategy === 'rank-v33' ? 'rank-v33' : 'rank-v31');
 }
 
 const leverageTests = [
@@ -1585,6 +1845,14 @@ const equityV321 = [
   { time: '2026/09', value: 127.24 },
 ];
 
+const equityV33 = [
+  { time: '2025/10', value: 100.0 },
+  { time: '2025/12', value: 110.62 },
+  { time: '2026/03', value: 145.08 },
+  { time: '2026/06', value: 166.84 },
+  { time: '2026/09', value: 249.98 },
+];
+
 const performance = [
   { time: '08/18', value: 0.0 },
   { time: '08/19', value: 1.4 },
@@ -1626,6 +1894,29 @@ const strategyRulesV31 = [
   {
     title: 'V31 风险规则',
     body: '最大追价距离 1.25 ATR，初始止损 2.0 ATR，目标 2R，最多持仓 8 根 15 分钟 K 线；只读，不自动下单。',
+    icon: ShieldCheck,
+  },
+];
+
+const strategyRulesV33 = [
+  {
+    title: '12 根整理区首次突破',
+    body: '15m 收盘突破此前 12 根 K 线高点或低点时只建立候选，不立即追单；候选方向需进入横截面前/后 10 名。',
+    icon: Gauge,
+  },
+  {
+    title: '只等第一次回踩',
+    body: '候选最多保留 12 根 15m；首次触及突破位附近 0.35 ATR 后进入确认，收盘跌回结构 0.25 ATR 即失效。',
+    icon: Target,
+  },
+  {
+    title: '收盘重夺才可开单',
+    body: '回踩后 3 根内必须收盘突破前一根高/低、重新进入前/后 5 名、1H 同向且 4H 不反向，量比至少 0.8x。',
+    icon: Zap,
+  },
+  {
+    title: '防追价与冻结结论',
+    body: '确认价距突破位不得超过 0.8 ATR；结构止损至少 1.25 ATR、目标 1.2R、最多持有 16 根。年度目标未通过，仅研究观察。',
     icon: ShieldCheck,
   },
 ];
@@ -1750,11 +2041,17 @@ function getEntryStateLabel(state?: EntryState) {
     ? '可以开单'
     : state === 'OVEREXTENDED'
       ? '涨跌过远 · 禁止追单'
-      : state === 'WAIT_PULLBACK'
-        ? '等待回踩'
-        : state === 'WAIT_CONFIRM'
-          ? '等待重新突破'
-          : '无方向优势';
+      : state === 'WAIT_BREAKOUT'
+        ? '等待整理区突破'
+        : state === 'WAIT_PULLBACK'
+          ? '等待回踩'
+          : state === 'WAIT_CONFIRM'
+            ? '等待重新突破'
+            : state === 'INVALIDATED'
+              ? '结构失效'
+              : state === 'EXPIRED'
+                ? '窗口过期'
+                : '无方向优势';
 }
 
 function H4PriorityBadge({ priority }: { priority?: H4Priority }) {
@@ -1787,10 +2084,7 @@ function getHoldingProfile(item: Instrument, strategy: StrategyKey) {
       upgrade: item.holdingUpgrade ?? '等待下一次收盘复核',
     };
   }
-  if (
-    strategy === 'rank-v32' ||
-    strategy === 'rank-v321'
-  ) {
+  if (strategy === 'rank-v32' || strategy === 'rank-v321') {
     const isP0 =
       item.h4Priority === 'P0-LONG' || item.h4Priority === 'P0-SHORT';
     return isP0
@@ -1826,7 +2120,13 @@ function getHoldingProfile(item: Instrument, strategy: StrategyKey) {
   };
 }
 
-function HoldingBadge({ item, strategy }: { item: Instrument; strategy: StrategyKey }) {
+function HoldingBadge({
+  item,
+  strategy,
+}: {
+  item: Instrument;
+  strategy: StrategyKey;
+}) {
   const profile = getHoldingProfile(item, strategy);
   return (
     <span className={`holding-badge ${profile.stage.toLowerCase()}`}>
@@ -1876,12 +2176,12 @@ function ScanTable({
 }) {
   const isV321 = strategy === 'rank-v321';
   const isV32 = strategy === 'rank-v32' || isV321;
+  const isV33 = strategy === 'rank-v33';
   const h4PriorityCount = rows.filter(
     (item) => item.h4Priority && item.h4Priority !== 'WATCH',
   ).length;
   const extendedHoldingCount = rows.filter(
-    (item) =>
-      item.holdingStage === 'INTRADAY' || item.holdingStage === 'SWING',
+    (item) => item.holdingStage === 'INTRADAY' || item.holdingStage === 'SWING',
   ).length;
   return (
     <Card className="table-card">
@@ -1958,7 +2258,9 @@ function ScanTable({
                 <td className="entry-decision-cell">
                   <SignalBadge signal={item.signal} strength={item.strength} />
                   {!isV32 && (
-                    <small className={`entry-state ${item.entryState?.toLowerCase() ?? ''}`}>
+                    <small
+                      className={`entry-state ${item.entryState?.toLowerCase() ?? ''}`}
+                    >
                       {getEntryStateLabel(item.entryState)}
                     </small>
                   )}
@@ -2015,7 +2317,9 @@ function ScanTable({
             ? 'Gate 行情暂时连接失败 · 保留上次数据'
             : isV32
               ? `${isV321 ? 'V32.1' : 'V32'} · 15m 最近收盘 · ${formatChinaTime(closedAt)} · 仅在已收盘 4H / 1H 条件通过后，理论开单为下一根 15m 开盘`
-              : `最近收盘 K 线 · ${formatChinaTime(closedAt)} · 理论开单为下一根 15m 开盘`}
+              : isV33
+                ? `V33 · 首次回踩状态机 · ${formatChinaTime(closedAt)} · 仅 READY 可在下一根 15m 理论开单`
+                : `最近收盘 K 线 · ${formatChinaTime(closedAt)} · 理论开单为下一根 15m 开盘`}
         </span>
         <span>
           {scanStats.total > 0
@@ -2074,8 +2378,7 @@ function StrongestSignals({
             <span className="elite-signal" key={item.symbol}>
               <b>{item.name}</b>
               <span>
-                {item.h4Priority === 'P0-LONG' ||
-                item.h4Priority === 'P0-SHORT'
+                {item.h4Priority === 'P0-LONG' || item.h4Priority === 'P0-SHORT'
                   ? 'P0 + P1'
                   : item.signal === 'LONG'
                     ? '15m 次级多头'
@@ -2094,7 +2397,9 @@ function StrongestSignals({
           ))}
         </div>
       ) : (
-        <span className="elite-empty">当前没有可立即开单的 S+；趋势方向不等于入场指令</span>
+        <span className="elite-empty">
+          当前没有可立即开单的 S+；趋势方向不等于入场指令
+        </span>
       )}
     </div>
   );
@@ -2110,14 +2415,14 @@ function SignalCommandCenter({
   closedAt: number | null;
 }) {
   const isV32 = strategy === 'rank-v32' || strategy === 'rank-v321';
+  const isV33 = strategy === 'rank-v33';
   const ranked = [...rows].sort((a, b) => b.score - a.score);
   const strongest =
     ranked.find((item) => item.strength === 'S+' && item.signal !== 'WAIT') ??
     ranked.find((item) => item.signal !== 'WAIT') ??
     ranked[0];
   const p0 = ranked.find(
-    (item) =>
-      item.h4Priority === 'P0-LONG' || item.h4Priority === 'P0-SHORT',
+    (item) => item.h4Priority === 'P0-LONG' || item.h4Priority === 'P0-SHORT',
   );
   const p1 = ranked.find((item) => item.signal !== 'WAIT');
   const holdCandidate =
@@ -2134,7 +2439,8 @@ function SignalCommandCenter({
   const directionLabel = (item?: Instrument) => {
     if (!item) return '等待';
     if (item.signal === 'LONG' || item.h4Priority === 'P0-LONG') return '看多';
-    if (item.signal === 'SHORT' || item.h4Priority === 'P0-SHORT') return '看空';
+    if (item.signal === 'SHORT' || item.h4Priority === 'P0-SHORT')
+      return '看空';
     return '等待';
   };
 
@@ -2143,7 +2449,8 @@ function SignalCommandCenter({
       <Card className="signal-focus-card">
         <CardHeader>
           <div className="focus-card-kicker">
-            <Zap size={15} /> {isV32 ? '最强信号' : 'V31 入场判断'}
+            <Zap size={15} />{' '}
+            {isV32 ? '最强信号' : isV33 ? 'V33 首次回踩判断' : 'V31 入场判断'}
           </div>
           <CardDescription>
             {strongest
@@ -2200,9 +2507,11 @@ function SignalCommandCenter({
             <div className="priority-title-row">
               <div>
                 <span className="priority-label">
-                  {isV32 ? 'P0 · 4H' : 'HOLD · V31'}
+                  {isV32 ? 'P0 · 4H' : isV33 ? 'SETUP · V33' : 'HOLD · V31'}
                 </span>
-                <strong>{isV32 ? '最高优先级' : '持仓升级'}</strong>
+                <strong>
+                  {isV32 ? '最高优先级' : isV33 ? '首次回踩候选' : '持仓升级'}
+                </strong>
               </div>
               <SignalBadge
                 signal={
@@ -2212,7 +2521,7 @@ function SignalCommandCenter({
                       : p0?.h4Priority === 'P0-SHORT'
                         ? 'SHORT'
                         : 'WAIT'
-                    : holdCandidate?.signal ?? 'WAIT'
+                    : (holdCandidate?.signal ?? 'WAIT')
                 }
                 strength={isV32 ? p0?.strength : holdCandidate?.strength}
               />
@@ -2222,8 +2531,8 @@ function SignalCommandCenter({
                 标的
                 <b>
                   {isV32
-                    ? p0?.symbol ?? '等待 4H 收盘'
-                    : holdCandidate?.symbol ?? '暂无升级候选'}
+                    ? (p0?.symbol ?? '等待 4H 收盘')
+                    : (holdCandidate?.symbol ?? '暂无升级候选')}
                 </b>
               </span>
               <span>
@@ -2231,7 +2540,7 @@ function SignalCommandCenter({
                 <b>
                   {isV32
                     ? directionLabel(p0)
-                    : candidateHolding?.label ?? '等待'}
+                    : (candidateHolding?.label ?? '等待')}
                 </b>
               </span>
               <span>
@@ -2241,7 +2550,7 @@ function SignalCommandCenter({
                     ? p0
                       ? `${p0.score}%`
                       : '—'
-                    : candidateHolding?.window ?? '—'}
+                    : (candidateHolding?.window ?? '—')}
                 </b>
               </span>
             </div>
@@ -2252,9 +2561,18 @@ function SignalCommandCenter({
             <div className="priority-title-row">
               <div>
                 <span className="priority-label">P1 · 15m</span>
-                <strong>{isV32 ? '次级开单信号' : 'V31 快速开单'}</strong>
+                <strong>
+                  {isV32
+                    ? '次级开单信号'
+                    : isV33
+                      ? 'V33 收盘确认'
+                      : 'V31 快速开单'}
+                </strong>
               </div>
-              <SignalBadge signal={p1?.signal ?? 'WAIT'} strength={p1?.strength} />
+              <SignalBadge
+                signal={p1?.signal ?? 'WAIT'}
+                strength={p1?.strength}
+              />
             </div>
             <div className="priority-data-grid">
               <span>
@@ -2264,7 +2582,10 @@ function SignalCommandCenter({
                 方向<b>{directionLabel(p1)}</b>
               </span>
               <span>
-                状态<b>{isV32 ? '多周期确认' : '30m–2h 起步'}</b>
+                状态
+                <b>
+                  {isV32 ? '多周期确认' : isV33 ? '只认 READY' : '30m–2h 起步'}
+                </b>
               </span>
             </div>
           </CardContent>
@@ -2294,6 +2615,7 @@ function Overview({
   const selectedStrategy = strategyCatalog[strategy];
   const isV321 = strategy === 'rank-v321';
   const isV32 = strategy === 'rank-v32' || isV321;
+  const isV33 = strategy === 'rank-v33';
   const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT' | 'WAIT'>(
     '全部',
   );
@@ -2309,17 +2631,21 @@ function Overview({
     strategy === 'rank-v1' ? 'rank-v31' : strategy;
   const metrics = strategyMetrics[testedKey];
   const chartData =
-    testedKey === 'rank-v321'
-      ? equityV321
-      : testedKey === 'rank-v32'
-        ? equityV32
-        : equityV31;
+    testedKey === 'rank-v33'
+      ? equityV33
+      : testedKey === 'rank-v321'
+        ? equityV321
+        : testedKey === 'rank-v32'
+          ? equityV32
+          : equityV31;
   const isV31 = strategy === 'rank-v31';
   const validationWindow = isV321
     ? `${v321AnnualValidation.period} · ${v321AnnualValidation.primary.trades} 核心 / ${v321AnnualValidation.broad.trades} 全篮子`
-    : isV32
-      ? `${v32AnnualValidation.period} · ${v32AnnualValidation.primary.trades} 核心 / ${v32AnnualValidation.broad.trades} 全篮子`
-      : `${v31AnnualValidation.period} · ${v31AnnualValidation.primary.trades} 核心 / ${v31AnnualValidation.broad.trades} 全篮子`;
+    : isV33
+      ? `${v33AnnualValidation.period} · ${v33AnnualValidation.full.trades} 笔账户成交`
+      : isV32
+        ? `${v32AnnualValidation.period} · ${v32AnnualValidation.primary.trades} 核心 / ${v32AnnualValidation.broad.trades} 全篮子`
+        : `${v31AnnualValidation.period} · ${v31AnnualValidation.primary.trades} 核心 / ${v31AnnualValidation.broad.trades} 全篮子`;
   return (
     <>
       <section className="hero-row">
@@ -2354,9 +2680,11 @@ function Overview({
           <span>
             {isV321
               ? 'V32.1 保留 V32 的已收盘多周期结构，只增加均量参与确认和 40% / 30% / 30% 退出。当前样本胜率与 PF 改善，但参数已接触该年度数据，因此只进入冻结前向观察。'
-              : isV32
-                ? 'V32 已接入为独立多周期观察版：4H / 1H 条件只读取已收盘 K 线，15m 才负责触发。年度核心 PF 0.849、前半年不稳定，因此当前不具备前向模拟资格。'
-                : 'V31 实时扫描已增加防追涨入场层：趋势排名与开单信号分开，只有回踩后重新突破、EMA20 乖离不超过 0.8 ATR 且量能合格才显示可开单。页面历史指标仍是原 V31 基线，不代表新规则表现。'}
+              : isV33
+                ? 'V33 只在突破后的第一次回踩重新确认时开单，避免趋势已走远仍追入。年度检查为 0.78 笔/天、胜率 51.16%、PF 1.157，未达到目标，仅用于研究观察。'
+                : isV32
+                  ? 'V32 已接入为独立多周期观察版：4H / 1H 条件只读取已收盘 K 线，15m 才负责触发。年度核心 PF 0.849、前半年不稳定，因此当前不具备前向模拟资格。'
+                  : 'V31 实时扫描已增加防追涨入场层：趋势排名与开单信号分开，只有回踩后重新突破、EMA20 乖离不超过 0.8 ATR 且量能合格才显示可开单。页面历史指标仍是原 V31 基线，不代表新规则表现。'}
           </span>
         </div>
         <button aria-label="查看风险说明" onClick={() => goTo('策略版本')}>
@@ -2368,7 +2696,7 @@ function Overview({
           label="复合收益"
           value={metrics.compound}
           detail={validationWindow}
-          tone={isV32 && !isV321 ? 'negative' : 'positive'}
+          tone={isV33 || (isV32 && !isV321) ? 'negative' : 'positive'}
           icon={TrendingDown}
         />
         <MetricCard
@@ -2377,11 +2705,13 @@ function Overview({
           detail={
             isV321
               ? '等风险 PF / 原始 PF · 核心八币种'
+              : isV33
+                ? '40 标的代理账户 · 目标 1.6 未通过'
                 : isV32
                   ? '核心八币种 · 前后半年稳定性未通过'
                   : '当前所选策略'
           }
-          tone={isV32 && !isV321 ? 'negative' : 'positive'}
+          tone={isV33 || (isV32 && !isV321) ? 'negative' : 'positive'}
           icon={Gauge}
         />
         <MetricCard
@@ -2390,11 +2720,13 @@ function Overview({
           detail={
             isV321
               ? '核心八币种 · V32 为 55.91%'
+              : isV33
+                ? '40 标的代理账户 · 目标 65% 未通过'
                 : isV32
                   ? '核心八币种 · 已收盘多周期条件'
                   : `${metrics.trades} 笔交易`
           }
-          tone={isV32 ? 'warning' : 'neutral'}
+          tone={isV32 || isV33 ? 'warning' : 'neutral'}
           icon={Activity}
         />
         <MetricCard
@@ -2412,7 +2744,7 @@ function Overview({
               <CardTitle>策略净值曲线</CardTitle>
               <CardDescription>
                 {selectedStrategy.name} {selectedStrategy.version} · 15 分钟 ·
-                {isV32 || isV31
+                {isV32 || isV31 || isV33
                   ? '年度主测试 · 季度端点 · 零成本'
                   : '约 41 天零成本回放'}
               </CardDescription>
@@ -2446,7 +2778,15 @@ function Overview({
                   tick={{ fill: '#918d84', fontSize: 11 }}
                 />
                 <YAxis
-                  domain={isV321 ? [95, 130] : isV32 ? [85, 125] : [95, 125]}
+                  domain={
+                    isV33
+                      ? [90, 260]
+                      : isV321
+                        ? [95, 130]
+                        : isV32
+                          ? [85, 125]
+                          : [95, 125]
+                  }
                   axisLine={false}
                   tickLine={false}
                   tick={{ fill: '#918d84', fontSize: 11 }}
@@ -2493,7 +2833,7 @@ function Overview({
               <div>
                 <strong>历史 K 线数据</strong>
                 <small>
-                  {isV32
+                  {isV32 || isV33
                     ? '流动性合格池 · 260 根 15m / 1H / 4H'
                     : '流动性合格池 · 220 根15m'}
                 </small>
@@ -2532,7 +2872,9 @@ function Overview({
           <h3>
             {isV32
               ? '真实 4H 趋势、1H 回踩与 15m 触发'
-              : '流动性合格池强弱排名与分级信号'}
+              : isV33
+                ? '12 根整理区突破、首次回踩与收盘重夺'
+                : '流动性合格池强弱排名与分级信号'}
           </h3>
         </div>
         <div className="section-actions">
@@ -2691,6 +3033,7 @@ function ScannerPage({
   const selectedStrategy = strategyCatalog[strategy];
   const isV321 = strategy === 'rank-v321';
   const isV32 = strategy === 'rank-v32' || isV321;
+  const isV33 = strategy === 'rank-v33';
   const [market, setMarket] = useState<'全部' | 'LONG' | 'SHORT' | 'WAIT'>(
     '全部',
   );
@@ -2862,7 +3205,7 @@ function ScannerPage({
                       <em>{selected.entryReason ?? '等待下一根收盘确认'}</em>
                     </div>
                     <div>
-                      <span>V31 持仓阶段</span>
+                      <span>{isV33 ? 'V33 观察阶段' : 'V31 持仓阶段'}</span>
                       <strong>{selectedHolding.label}</strong>
                       <em>参考观察 {selectedHolding.window}</em>
                     </div>
@@ -2949,7 +3292,7 @@ function ScannerPage({
                 {isV32
                   ? selected.signal === 'WAIT'
                     ? selected.h4Priority === 'P0-LONG' ||
-                        selected.h4Priority === 'P0-SHORT'
+                      selected.h4Priority === 'P0-SHORT'
                       ? `P0 4H 最高优先级开单已闭合：理论开单为下一根 4H 开盘。15m 次级开单尚未形成，可独立等待，不影响 P0 信号。`
                       : `${isV321 ? 'V32.1' : 'V32'} 当前没有完整的 4H → 1H → 15m 闭合条件；${isV321 ? '量比还必须达到 1.0x。' : ''}不把高分或强弱排名当作开单理由。`
                     : `${selected.h4Priority === 'P0-LONG' || selected.h4Priority === 'P0-SHORT' ? 'P0 与 P1 同时出现：' : 'P1 15m 次级开单：'}4H 与 1H 均已收盘确认，P1 理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。P0 与 P1 独立计时；止损和分批止盈仅是研究参考，不代表自动开仓。`
@@ -2986,14 +3329,17 @@ function GateBacktestPage({
   const metrics = strategyMetrics[strategy];
   const currentExitBreakdown = metrics.exits;
   const chartData =
-    strategy === 'rank-v321'
-      ? equityV321
-      : strategy === 'rank-v32'
-        ? equityV32
-        : equityV31;
+    strategy === 'rank-v33'
+      ? equityV33
+      : strategy === 'rank-v321'
+        ? equityV321
+        : strategy === 'rank-v32'
+          ? equityV32
+          : equityV31;
   const isV321 = strategy === 'rank-v321';
   const isV32 = strategy === 'rank-v32' || isV321;
   const isV31 = strategy === 'rank-v31';
+  const isV33 = strategy === 'rank-v33';
   const runBacktest = () => {
     setRunning(true);
     setToast('正在按当前参数重放本地报告…');
@@ -3018,11 +3364,13 @@ function GateBacktestPage({
             <CardDescription>
               {isV321
                 ? '当前约束通过 · 参数冻结后进入前向观察'
-                : isV32
-                  ? '年度前后半年稳定性未通过 · 仅保留为多周期研究观察'
-                : isV31
-                    ? '年度规则筛选通过 · 仅进入前向模拟'
-                    : selected.mode}
+                : isV33
+                  ? '首次回踩年度目标未通过 · 独立研究观察'
+                  : isV32
+                    ? '年度前后半年稳定性未通过 · 仅保留为多周期研究观察'
+                    : isV31
+                      ? '年度规则筛选通过 · 仅进入前向模拟'
+                      : selected.mode}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -3031,7 +3379,7 @@ function GateBacktestPage({
                 <label htmlFor="backtest-interval">时间周期</label>
                 <select
                   id="backtest-interval"
-                  defaultValue={isV32 ? '15m / 1h / 4h' : '15m'}
+                  defaultValue={isV32 || isV33 ? '15m / 1h / 4h' : '15m'}
                 >
                   <option>15m</option>
                   <option>1h</option>
@@ -3042,9 +3390,12 @@ function GateBacktestPage({
                 <label htmlFor="backtest-lookback">排名回看</label>
                 <select
                   id="backtest-lookback"
-                  defaultValue={isV32 ? '6 根 4H（24H）' : '16'}
+                  defaultValue={
+                    isV32 ? '6 根 4H（24H）' : isV33 ? '12 根整理区' : '16'
+                  }
                 >
                   <option>16 根（4H）</option>
+                  <option>12 根整理区</option>
                   <option>32 根（8H）</option>
                   <option>6 根 4H（24H）</option>
                 </select>
@@ -3056,13 +3407,16 @@ function GateBacktestPage({
                   defaultValue={
                     isV32
                       ? 'max(2.0 ATR15m, 1.25 ATR1h)'
-                      : isV31
-                        ? '2.0'
-                        : '1.5'
+                      : isV33
+                        ? '结构 / 最少 1.25'
+                        : isV31
+                          ? '2.0'
+                          : '1.5'
                   }
                 >
                   <option>2.0 ATR</option>
                   <option>1.5 ATR</option>
+                  <option>结构 / 最少 1.25 ATR</option>
                   <option>max(2.0 ATR15m, 1.25 ATR1h)</option>
                 </select>
               </div>
@@ -3070,10 +3424,13 @@ function GateBacktestPage({
                 <label htmlFor="backtest-target">目标 R</label>
                 <select
                   id="backtest-target"
-                  defaultValue={isV32 ? 'TP1 1R / TP2 2R' : '2.0'}
+                  defaultValue={
+                    isV32 ? 'TP1 1R / TP2 2R' : isV33 ? '1.2' : '2.0'
+                  }
                 >
                   <option>2.0 R</option>
                   <option>1.5 R</option>
+                  <option>1.2 R</option>
                   <option>TP1 1R / TP2 2R</option>
                 </select>
               </div>
@@ -3081,10 +3438,13 @@ function GateBacktestPage({
                 <label htmlFor="backtest-holding">最大持仓</label>
                 <select
                   id="backtest-holding"
-                  defaultValue={isV32 ? '32 根无进展 / 最多672根' : '8'}
+                  defaultValue={
+                    isV32 ? '32 根无进展 / 最多672根' : isV33 ? '16' : '8'
+                  }
                 >
                   <option>8 根 K 线</option>
                   <option>12 根 K 线</option>
+                  <option>16 根 K 线</option>
                   <option>32 根无进展 / 最多672根</option>
                 </select>
               </div>
@@ -3126,19 +3486,21 @@ function GateBacktestPage({
             <div>
               <CardTitle>结果摘要</CardTitle>
               <CardDescription>
-                {isV32 || isV31
-                  ? `${metrics.trades} 笔交易 · 一年期核心八币种 · 零成本`
+                {isV32 || isV31 || isV33
+                  ? `${metrics.trades} 笔交易 · ${isV33 ? '一年期 40 标的代理账户' : '一年期核心八币种'} · 零成本`
                   : `${metrics.trades} 笔交易 · 约 41 天零成本回放`}
               </CardDescription>
             </div>
             <Badge className="status-badge warning">
               {isV321
                 ? '冻结观察'
-                : isV32
-                  ? '年度 HOLD'
-                  : isV31
-                    ? '前向模拟'
-                    : '需要复核'}
+                : isV33
+                  ? '年度未通过'
+                  : isV32
+                    ? '年度 HOLD'
+                    : isV31
+                      ? '前向模拟'
+                      : '需要复核'}
             </Badge>
           </CardHeader>
           <CardContent>
@@ -3178,11 +3540,13 @@ function GateBacktestPage({
                 />
                 <YAxis
                   domain={
-                    isV321
-                      ? [95, 130]
-                      : isV32
-                        ? [85, 125]
-                        : [95, 115]
+                    isV33
+                      ? [90, 260]
+                      : isV321
+                        ? [95, 130]
+                        : isV32
+                          ? [85, 125]
+                          : [95, 115]
                   }
                   axisLine={false}
                   tickLine={false}
@@ -3207,7 +3571,7 @@ function GateBacktestPage({
           </CardContent>
         </Card>
       </div>
-      {(isV32 || isV31) && (
+      {(isV32 || isV31 || isV33) && (
         <Card className="exit-card">
           <CardHeader>
             <CardTitle>
@@ -3216,15 +3580,19 @@ function GateBacktestPage({
             <CardDescription>
               {isV321
                 ? v321AnnualValidation.period
-                : isV32
-                  ? v32AnnualValidation.period
-                  : v31AnnualValidation.period}
+                : isV33
+                  ? v33AnnualValidation.period
+                  : isV32
+                    ? v32AnnualValidation.period
+                    : v31AnnualValidation.period}
               ；
               {isV321
                 ? v321AnnualValidation.source
-                : isV32
-                  ? v32AnnualValidation.source
-                  : v31AnnualValidation.source}
+                : isV33
+                  ? v33AnnualValidation.source
+                  : isV32
+                    ? v32AnnualValidation.source
+                    : v31AnnualValidation.source}
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -3234,9 +3602,11 @@ function GateBacktestPage({
                 <strong>
                   {isV321
                     ? v321AnnualValidation.primary.trades
-                    : isV32
-                      ? v32AnnualValidation.primary.trades
-                      : v31AnnualValidation.primary.trades}{' '}
+                    : isV33
+                      ? v33AnnualValidation.full.trades
+                      : isV32
+                        ? v32AnnualValidation.primary.trades
+                        : v31AnnualValidation.primary.trades}{' '}
                   笔
                 </strong>
               </div>
@@ -3245,23 +3615,34 @@ function GateBacktestPage({
                 <strong>
                   {isV321
                     ? v321AnnualValidation.broad.trades
-                    : isV32
-                      ? v32AnnualValidation.broad.trades
-                      : v31AnnualValidation.broad.trades}{' '}
+                    : isV33
+                      ? v33AnnualValidation.secondHalf.trades
+                      : isV32
+                        ? v32AnnualValidation.broad.trades
+                        : v31AnnualValidation.broad.trades}{' '}
                   笔
                 </strong>
               </div>
               <div>
-                <span>全篮子 PF</span>
+                <span>{isV33 ? '全年 / 后半年 PF' : '全篮子 PF'}</span>
                 <strong>
                   {isV321
                     ? `${v321AnnualValidation.broad.riskProfitFactor} 等风险 / ${v321AnnualValidation.broad.rawProfitFactor} 原始`
-                    : isV32
-                      ? v32AnnualValidation.broad.profitFactor
-                      : v31AnnualValidation.broad.profitFactor}
+                    : isV33
+                      ? `${v33AnnualValidation.full.profitFactor} / ${v33AnnualValidation.secondHalf.profitFactor}`
+                      : isV32
+                        ? v32AnnualValidation.broad.profitFactor
+                        : v31AnnualValidation.broad.profitFactor}
                 </strong>
               </div>
-              {isV321 ? (
+              {isV33 ? (
+                <div>
+                  <span>账户成交频率</span>
+                  <strong className="negative-text">
+                    {v33AnnualValidation.full.tradesPerDay} 笔/天
+                  </strong>
+                </div>
+              ) : isV321 ? (
                 <div>
                   <span>前后半年等风险 PF</span>
                   <strong>1.381 / 1.333</strong>
@@ -3277,8 +3658,7 @@ function GateBacktestPage({
                 <div>
                   <span>100x 近似爆仓</span>
                   <strong className="negative-text">
-                    {v31AnnualValidation.stress100x.liquidations}{' '}
-                    /{' '}
+                    {v31AnnualValidation.stress100x.liquidations} /{' '}
                     {v31AnnualValidation.stress100x.rate}
                   </strong>
                 </div>
@@ -3288,15 +3668,19 @@ function GateBacktestPage({
               <AlertTriangle size={15} /> 四个时间段 PF：
               {isV321
                 ? v321AnnualValidation.quarterlyRiskProfitFactors
-                : isV32
-                  ? v32AnnualValidation.quarterlyProfitFactors
-                  : v31AnnualValidation.quarterlyProfitFactors}
+                : isV33
+                  ? 'V33 使用前后半年冻结检查'
+                  : isV32
+                    ? v32AnnualValidation.quarterlyProfitFactors
+                    : v31AnnualValidation.quarterlyProfitFactors}
               。
               {isV321
                 ? `V32.1 保留 359 笔（原 V32 的 75.58%），胜率 55.99%；全篮子等风险 PF 1.357、原始 PF 1.232。${v321AnnualValidation.halfYear.broad}；核心为 ${v321AnnualValidation.halfYear.core}。第四段等风险 PF 仅 1.066，且规则从同一年度样本中选出，所以只能冻结前向观察。`
-                : isV32
-                  ? `V32 的预先声明门槛为全篮子 PF ≥ 1.15、两半各 PF ≥ 1.05，且每半至少 75 笔；实际全篮子为 ${v32AnnualValidation.halfYear.broad}，核心为 ${v32AnnualValidation.halfYear.core}。因此页面只允许研究观察，不把它标成可执行策略。`
-                  : 'V31 的规则门槛通过，但参数与本次复核使用同一年度样本；核心第三季度 PF 仅 0.613，必须先做新的前向模拟。'}
+                : isV33
+                  ? `V33 全年胜率 ${v33AnnualValidation.full.winRate}、PF ${v33AnnualValidation.full.profitFactor}、${v33AnnualValidation.full.tradesPerDay} 笔/天；后半年胜率 ${v33AnnualValidation.secondHalf.winRate}、PF ${v33AnnualValidation.secondHalf.profitFactor}。目标是 ${v33AnnualValidation.target}，三项均未同时达到。带星号复合收益来自 500 USDT、每笔风险 5% 且忽略所有成本的高风险复利演示，不可视为预期收益。`
+                  : isV32
+                    ? `V32 的预先声明门槛为全篮子 PF ≥ 1.15、两半各 PF ≥ 1.05，且每半至少 75 笔；实际全篮子为 ${v32AnnualValidation.halfYear.broad}，核心为 ${v32AnnualValidation.halfYear.core}。因此页面只允许研究观察，不把它标成可执行策略。`
+                    : 'V31 的规则门槛通过，但参数与本次复核使用同一年度样本；核心第三季度 PF 仅 0.613，必须先做新的前向模拟。'}
             </div>
           </CardContent>
         </Card>
@@ -3726,11 +4110,14 @@ function StrategyPage({
   const isV321 = strategy === 'rank-v321';
   const isV32 = strategy === 'rank-v32' || isV321;
   const isV31 = strategy === 'rank-v31';
-  const rules = isV321
-    ? strategyRulesV321
-    : isV32
-      ? strategyRulesV32
-      : strategyRulesV31;
+  const isV33 = strategy === 'rank-v33';
+  const rules = isV33
+    ? strategyRulesV33
+    : isV321
+      ? strategyRulesV321
+      : isV32
+        ? strategyRulesV32
+        : strategyRulesV31;
   const selected = strategyCatalog[strategy];
   return (
     <>
@@ -3739,32 +4126,38 @@ function StrategyPage({
         kicker="Strategy registry"
         title="策略版本"
         description={
-          isV321
-            ? 'v32.1 是独立的 PF 平衡候选，V31 与 V32 都保留。它只增加均量参与确认和新的分批比例；当前约束通过后参数冻结，仅允许前向观察。'
-            : isV32
-              ? 'v32 是独立的多周期波段候选，保留 v31 作为短线版本。它使用真实已收盘 4H / 1H 上下文，但一年期前后半年稳定性未通过，因此仅允许研究观察。'
-              : 'v31 已替换为当前主策略：不合格流动性合约直接剔除，只对合格美股永续与主流加密进行排名；年度规则筛选通过，仍需前向模拟。'
+          isV33
+            ? 'v33 是独立的“顺势首次回踩”研究版，V31 完整保留。它专门解决趋势已涨很高仍提示追多的问题；一年期联合目标未通过，所以不会标成可实盘。'
+            : isV321
+              ? 'v32.1 是独立的 PF 平衡候选，V31 与 V32 都保留。它只增加均量参与确认和新的分批比例；当前约束通过后参数冻结，仅允许前向观察。'
+              : isV32
+                ? 'v32 是独立的多周期波段候选，保留 v31 作为短线版本。它使用真实已收盘 4H / 1H 上下文，但一年期前后半年稳定性未通过，因此仅允许研究观察。'
+                : 'v31 已替换为当前主策略：不合格流动性合约直接剔除，只对合格美股永续与主流加密进行排名；年度规则筛选通过，仍需前向模拟。'
         }
       />
       <div className="strategy-hero">
         <div>
           <div className="version-row">
             <Badge className="version-badge">
-              {isV321
-                ? 'v32.1 · PF BALANCED MTF'
-                : isV32
-                  ? 'v32 · CLOSED-CANDLE MTF'
-                  : 'v31 · BALANCED EXTENSION'}
+              {isV33
+                ? 'v33 · FIRST PULLBACK'
+                : isV321
+                  ? 'v32.1 · PF BALANCED MTF'
+                  : isV32
+                    ? 'v32 · CLOSED-CANDLE MTF'
+                    : 'v31 · BALANCED EXTENSION'}
             </Badge>
             <span className="muted-label">Gate stocks + mainstream crypto</span>
           </div>
           <h2>{selected.name}</h2>
           <p>
-            {isV321
-              ? 'V32.1 不替换 V31 或 V32。它把触发量门槛从 0.8x 提高到 1.0x，并采用 40%@1R、30%@2R、30% 趋势尾仓。当前年度筛选中，全篮子胜率 55.99%，等风险 PF 1.357、原始 PF 1.232；由于规则已接触本样本，只能冻结前向观察。'
-              : isV32
-                ? 'V32 不替换 V31：它先以已收盘 4H 的趋势结构决定方向，再要求 1H 回踩和 15m 收盘触发。年度核心 PF 为 0.849、前半年 PF 0.735，未达到预设稳定性标准，所以部署为透明的研究观察而非前向模拟。'
-                : '在流动性硬过滤基础上增加强弱排名、趋势、VWAP 和成交量综合评分，并将合格信号分为 S+ / S / A / WATCH。'}
+            {isV33
+              ? 'V33 先识别 12 根整理区突破，只把它登记为候选；随后只接受第一次回踩，并要求 3 根内收盘重夺、排名回到前/后 5、1H 同向且 4H 不反向。全年账户口径 258 笔、胜率 51.16%、PF 1.157、0.78 笔/天，未达到 65% / 1.6 / 2 笔目标。'
+              : isV321
+                ? 'V32.1 不替换 V31 或 V32。它把触发量门槛从 0.8x 提高到 1.0x，并采用 40%@1R、30%@2R、30% 趋势尾仓。当前年度筛选中，全篮子胜率 55.99%，等风险 PF 1.357、原始 PF 1.232；由于规则已接触本样本，只能冻结前向观察。'
+                : isV32
+                  ? 'V32 不替换 V31：它先以已收盘 4H 的趋势结构决定方向，再要求 1H 回踩和 15m 收盘触发。年度核心 PF 为 0.849、前半年 PF 0.735，未达到预设稳定性标准，所以部署为透明的研究观察而非前向模拟。'
+                  : '在流动性硬过滤基础上增加强弱排名、趋势、VWAP 和成交量综合评分，并将合格信号分为 S+ / S / A / WATCH。'}
           </p>
         </div>
         <Button
@@ -3775,9 +4168,11 @@ function StrategyPage({
           <Check size={15} />{' '}
           {isV321
             ? '冻结观察'
-            : isV32
+            : isV33
               ? '研究观察'
-              : '前向模拟'}
+              : isV32
+                ? '研究观察'
+                : '前向模拟'}
         </Button>
       </div>
       <div className="strategy-layout">
@@ -3788,9 +4183,11 @@ function StrategyPage({
               来自{' '}
               {isV321
                 ? 'Gate_V32_1_PF_Balanced'
-                : isV32
-                  ? 'Gate_V32_MTF_Runner'
-                  : 'Gate_V31_Balanced_Extension'}
+                : isV33
+                  ? 'Gate_V33_First_Pullback'
+                  : isV32
+                    ? 'Gate_V32_MTF_Runner'
+                    : 'Gate_V31_Balanced_Extension'}
             </CardDescription>
           </CardHeader>
           <CardContent className="rule-list">
@@ -3814,29 +4211,39 @@ function StrategyPage({
             <CardDescription>
               {isV321
                 ? 'V321Config · participation-confirmed'
-                : isV32
-                  ? 'V32Config · closed-candle-mtf'
-                  : 'V31Config · balanced-extension'}
+                : isV33
+                  ? 'V33Config · first-pullback-reclaim'
+                  : isV32
+                    ? 'V32Config · closed-candle-mtf'
+                    : 'V31Config · balanced-extension'}
             </CardDescription>
           </CardHeader>
           <CardContent>
             <dl className="params-list">
               <div>
                 <dt>周期</dt>
-                <dd>{isV32 ? '15m 触发 / 1H / 4H' : '15 分钟'}</dd>
+                <dd>{isV32 || isV33 ? '15m 触发 / 1H / 4H' : '15 分钟'}</dd>
               </div>
               <div>
                 <dt>EMA</dt>
-                <dd>{isV32 ? '4H 50 / 200 · 1H 20 / 50' : '20 / 50 / 200'}</dd>
+                <dd>
+                  {isV33
+                    ? '1H 20 / 50 · 4H 20 / 50'
+                    : isV32
+                      ? '4H 50 / 200 · 1H 20 / 50'
+                      : '20 / 50 / 200'}
+                </dd>
               </div>
               <div>
                 <dt>ATR</dt>
                 <dd>
                   {isV32
                     ? 'max(2.0×15m, 1.25×1H)'
-                    : isV31
-                      ? '14 · 止损 2.0x'
-                      : '14 · 止损 1.5x'}
+                    : isV33
+                      ? '结构止损 · 最少 1.25x'
+                      : isV31
+                        ? '14 · 止损 2.0x'
+                        : '14 · 止损 1.5x'}
                 </dd>
               </div>
               <div>
@@ -3844,9 +4251,11 @@ function StrategyPage({
                 <dd>
                   {isV321
                     ? '40%@1R · 30%@2R · 30% 跟踪'
-                    : isV32
-                      ? '25%@1R · 25%@2R · 余仓跟踪'
-                      : '2.0R'}
+                    : isV33
+                      ? '固定 1.2R'
+                      : isV32
+                        ? '25%@1R · 25%@2R · 余仓跟踪'
+                        : '2.0R'}
                 </dd>
               </div>
               <div>
@@ -3858,19 +4267,23 @@ function StrategyPage({
                 <dd>
                   {isV32
                     ? 'Top / Bottom 2'
-                    : 'Top / Bottom 5（S+ 优先）'}
+                    : isV33
+                      ? '候选 10 · 开单 5'
+                      : 'Top / Bottom 5（S+ 优先）'}
                 </dd>
               </div>
-              {(isV32 || isV31) && (
+              {(isV32 || isV31 || isV33) && (
                 <>
                   <div>
                     <dt>成交量比例</dt>
                     <dd>
                       {isV321
                         ? '≥ 1.0x'
-                        : isV32
+                        : isV33
                           ? '≥ 0.8x'
-                          : '1.0–1.4x'}
+                          : isV32
+                            ? '≥ 0.8x'
+                            : '1.0–1.4x'}
                     </dd>
                   </div>
                   <div>
@@ -3878,7 +4291,9 @@ function StrategyPage({
                     <dd>
                       {isV32
                         ? '4H ADX ≥ 18 · 15m ATR ≤ 4%'
-                        : 'ADX 15–25 · ATR ≤ 2%'}
+                        : isV33
+                          ? '突破位乖离 ≤ 0.8 ATR'
+                          : 'ADX 15–25 · ATR ≤ 2%'}
                     </dd>
                   </div>
                 </>
@@ -3907,15 +4322,37 @@ function StrategyPage({
                   </div>
                 </>
               )}
+              {isV33 && (
+                <>
+                  <div>
+                    <dt>状态窗口</dt>
+                    <dd>突破 12 根 · 回踩确认 3 根</dd>
+                  </div>
+                  <div>
+                    <dt>首次回踩</dt>
+                    <dd>突破位 ±0.35 ATR</dd>
+                  </div>
+                </>
+              )}
               <div>
                 <dt>最多持仓</dt>
-                <dd>{isV32 ? '672 根 15m（7 天）' : '8 根 K 线'}</dd>
+                <dd>
+                  {isV32
+                    ? '672 根 15m（7 天）'
+                    : isV33
+                      ? '16 根 15m（4 小时）'
+                      : '8 根 K 线'}
+                </dd>
               </div>
-              {(isV31 || isV32) && (
+              {(isV31 || isV32 || isV33) && (
                 <div>
                   <dt>单笔风险</dt>
                   <dd>
-                    {isV32 ? '0.5% · 研究上限 5x' : '0.5% · 杠杆上限 10x'}
+                    {isV32
+                      ? '0.5% · 研究上限 5x'
+                      : isV33
+                        ? '回测 5% · 总杠杆上限 10x'
+                        : '0.5% · 杠杆上限 10x'}
                   </dd>
                 </div>
               )}
@@ -3942,6 +4379,17 @@ function StrategyPage({
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className={`history-row ${isV33 ? 'active' : ''}`}>
+            <span className={`history-dot ${isV33 ? '' : 'muted'}`} />
+            <div>
+              <strong>v33 · First Pullback Reclaim</strong>
+              <small>
+                独立研究版 · 全年 258 笔账户成交 · PF 1.157 · 胜率 51.16% · 0.78
+                笔/天 · 未通过 65% / 1.6 / 每天 2 笔目标
+              </small>
+            </div>
+            <Badge className="status-badge warning">目标未通过</Badge>
+          </div>
           <div className={`history-row ${isV321 ? 'active' : ''}`}>
             <span className={`history-dot ${isV321 ? '' : 'muted'}`} />
             <div>
@@ -4003,7 +4451,9 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
               </span>
               <div>
                 <CardTitle>Telegram 通知</CardTitle>
-                <CardDescription>P0 4H 高优先级开单 + P1 15m 次级开单</CardDescription>
+                <CardDescription>
+                  P0 4H 高优先级开单 + P1 15m 次级开单
+                </CardDescription>
               </div>
             </div>
           </CardHeader>
@@ -4061,7 +4511,11 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
               </span>
               <div>
                 <strong>P0 · 4H 最高优先级</strong>
-                <small>强弱排名第一/末位、4H 趋势、ADX ≥ 22、量比 ≥ 1.0x，且已收盘突破前一根 4H 高/低点；下一根 4H 开盘为理论开单。它不计入现有 V32.1 年度回测指标。</small>
+                <small>
+                  强弱排名第一/末位、4H 趋势、ADX ≥ 22、量比 ≥
+                  1.0x，且已收盘突破前一根 4H 高/低点；下一根 4H
+                  开盘为理论开单。它不计入现有 V32.1 年度回测指标。
+                </small>
               </div>
               <span className="event-tag">最高</span>
             </div>
@@ -4071,7 +4525,11 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
               </span>
               <div>
                 <strong>P1 · 15m 次级开单</strong>
-                <small>4H / 1H / 15m 均已收盘，触发量比合格后才提示；内容包含理论下一根 15m 开盘、止损、TP1 与 TP2。</small>
+                <small>
+                  4H / 1H / 15m
+                  均已收盘，触发量比合格后才提示；内容包含理论下一根 15m
+                  开盘、止损、TP1 与 TP2。
+                </small>
               </div>
               <span className="event-tag warn">次级</span>
             </div>
@@ -4105,7 +4563,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
 export default function Home() {
   const [activeNav, setActiveNav] = useState<Page>('总览');
   const [selectedStrategy, setSelectedStrategy] =
-    useState<StrategyKey>('rank-v31');
+    useState<StrategyKey>('rank-v33');
   const [instruments, setInstruments] =
     useState<Instrument[]>(initialInstruments);
   const [scanStats, setScanStats] = useState<ScanStats>(initialScanStats);
@@ -4223,6 +4681,13 @@ export default function Home() {
         <div className="sidebar-section-label">策略库</div>
         <div className="asset-list">
           <button
+            className={`asset-item ${selectedStrategy === 'rank-v33' ? 'selected' : ''}`}
+            onClick={() => chooseStrategy('rank-v33')}
+          >
+            <span className="asset-dot amber" />
+            First Pullback Reclaim <span className="asset-version">v33</span>
+          </button>
+          <button
             className={`asset-item ${selectedStrategy === 'rank-v321' ? 'selected' : ''}`}
             onClick={() => chooseStrategy('rank-v321')}
           >
@@ -4324,7 +4789,7 @@ export default function Home() {
           {pageContent}
           <footer className="page-footer">
             <span>
-              Gate Quant Lab · V31 short-term + V32 / V32.1 MTF research
+              Gate Quant Lab · V31 preserved + V33 first-pullback research
             </span>
             <span>
               <ShieldCheck size={14} /> 不构成投资建议
