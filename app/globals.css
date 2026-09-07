@@ -294,6 +294,25 @@ tbody tr:hover,tbody tr.row-selected { background:#0b202b; }
 .holding-badge.wait { color:#6c818b; border-color:#253943; background:#0d171d; }
 .holding-window-cell { color:#91a8b2; font-family:var(--font-geist-mono),monospace; white-space:nowrap; }
 .elite-holding { color:#4fcfe9 !important; }
+.bias-badge {
+  display:inline-flex;
+  align-items:center;
+  white-space:nowrap;
+  border-radius:999px;
+  padding:5px 8px;
+  font-size:11px;
+  font-weight:700;
+}
+.bias-badge.long { color:#54dca0; background:#0c2a22; }
+.bias-badge.short { color:#ff7b74; background:#2a171b; }
+.bias-badge.wait { color:#718791; background:#111d24; }
+.entry-decision-cell { min-width:138px; }
+.entry-decision-cell .signal-badge { margin-bottom:5px; }
+.entry-state { display:block; max-width:150px; color:#718791; font-size:11px; line-height:1.35; }
+.entry-state.ready { color:#50d99c; }
+.entry-state.overextended { color:#ff8179; }
+.entry-state.wait_pullback { color:#e1ae5d; }
+.entry-state.wait_confirm { color:#55cfe9; }
 
 .elite-strip {
   border-color:#17667d;

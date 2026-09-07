@@ -61,6 +61,12 @@ type Signal = 'LONG' | 'SHORT' | 'WAIT';
 type SignalStrength = 'S+' | 'S' | 'A' | 'WATCH';
 type H4Priority = 'P0-LONG' | 'P0-SHORT' | 'WATCH';
 type HoldingStage = 'WAIT' | 'QUICK' | 'INTRADAY' | 'SWING';
+type EntryState =
+  | 'READY'
+  | 'OVEREXTENDED'
+  | 'WAIT_PULLBACK'
+  | 'WAIT_CONFIRM'
+  | 'NO_BIAS';
 type AssetClass = 'US_STOCK' | 'CRYPTO';
 type DataState = 'loading' | 'live' | 'error';
 type Instrument = {
@@ -94,6 +100,10 @@ type Instrument = {
   holdingWindow?: string;
   holdingReason?: string;
   holdingUpgrade?: string;
+  bias?: Signal;
+  entryState?: EntryState;
+  entryReason?: string;
+  extensionAtr?: number;
 };
 type ScanStats = {
   total: number;
@@ -735,6 +745,8 @@ async function loadLiveInstrumentsV31() {
       if (closed.length < 60) throw new Error(`${symbol} K 线不足`);
 
       const latest = closed.at(-1)!;
+      const previous = closed.at(-2)!;
+      const twoBarsAgo = closed.at(-3)!;
       const reference = closed.at(-17)!;
       const recent = closed.slice(-16);
       const closes = closed.map((candle) => Number(candle.c));
@@ -784,6 +796,34 @@ async function loadLiveInstrumentsV31() {
           : latestClose < ema20 && ema20 < ema50 && ema50Slope < 0
             ? 'SHORT'
               : 'WAIT';
+      const pullbackWindow = closed.slice(-4, -1);
+      const recentThree = closed.slice(-3);
+      const recentPullbackLong = pullbackWindow.some(
+        (candle) =>
+          Number(candle.l) <= Math.max(ema20, vwap) + atr * 0.25 &&
+          Number(candle.c) > ema50,
+      );
+      const recentPullbackShort = pullbackWindow.some(
+        (candle) =>
+          Number(candle.h) >= Math.min(ema20, vwap) - atr * 0.25 &&
+          Number(candle.c) < ema50,
+      );
+      const freshBreakLong =
+        latestClose > Number(previous.h) &&
+        Number(previous.c) <= Number(twoBarsAgo.h);
+      const freshBreakShort =
+        latestClose < Number(previous.l) &&
+        Number(previous.c) >= Number(twoBarsAgo.l);
+      const extensionLong = atr > 0 ? (latestClose - ema20) / atr : 99;
+      const extensionShort = atr > 0 ? (ema20 - latestClose) / atr : 99;
+      const impulseLong =
+        recentThree.every((candle) => Number(candle.c) > Number(candle.o)) &&
+        atr > 0 &&
+        (latestClose - Number(recentThree[0].o)) / atr > 1.8;
+      const impulseShort =
+        recentThree.every((candle) => Number(candle.c) < Number(candle.o)) &&
+        atr > 0 &&
+        (Number(recentThree[0].o) - latestClose) / atr > 1.8;
       let h1Trend: Signal = 'WAIT';
       let h4Trend: Signal = 'WAIT';
       let h4Adx = 0;
@@ -849,6 +889,14 @@ async function loadLiveInstrumentsV31() {
         h4Trend,
         h4Adx,
         regimeClosedAt,
+        recentPullbackLong,
+        recentPullbackShort,
+        freshBreakLong,
+        freshBreakShort,
+        extensionLong,
+        extensionShort,
+        impulseLong,
+        impulseShort,
       };
     },
     6,
@@ -863,7 +911,7 @@ async function loadLiveInstrumentsV31() {
     .sort((a, b) => b.change - a.change)
     .map((item, index, all) => {
       const rank = index + 1;
-      const signal: Signal =
+      const bias: Signal =
         rank <= signalBand
           ? 'LONG'
           : rank > all.length - signalBand
@@ -873,11 +921,11 @@ async function loadLiveInstrumentsV31() {
         all.length > 1
           ? Math.abs((all.length + 1 - 2 * rank) / (all.length - 1))
           : 1;
-      const trendAligned = signal !== 'WAIT' && item.trend === signal;
+      const trendAligned = bias !== 'WAIT' && item.trend === bias;
       const vwapAligned =
-        signal === 'LONG'
+        bias === 'LONG'
           ? Number(item.price.replace(/,/g, '')) >= item.vwapValue
-          : signal === 'SHORT'
+          : bias === 'SHORT'
             ? Number(item.price.replace(/,/g, '')) <= item.vwapValue
             : false;
       const score = Math.round(
@@ -893,27 +941,81 @@ async function loadLiveInstrumentsV31() {
         ),
       );
       const strength: SignalStrength =
-        signal === 'WAIT'
+        bias === 'WAIT'
           ? 'WATCH'
           : score >= 88
             ? 'S+'
             : score >= 75
               ? 'S'
               : 'A';
+      const extensionAtr =
+        bias === 'LONG'
+          ? item.extensionLong
+          : bias === 'SHORT'
+            ? item.extensionShort
+            : 0;
+      const isImpulse =
+        bias === 'LONG'
+          ? item.impulseLong
+          : bias === 'SHORT'
+            ? item.impulseShort
+            : false;
+      const hasPullback =
+        bias === 'LONG'
+          ? item.recentPullbackLong
+          : bias === 'SHORT'
+            ? item.recentPullbackShort
+            : false;
+      const hasFreshBreak =
+        bias === 'LONG'
+          ? item.freshBreakLong
+          : bias === 'SHORT'
+            ? item.freshBreakShort
+            : false;
+      const overextended = bias !== 'WAIT' && (extensionAtr > 0.8 || isImpulse);
+      const confirmed = trendAligned && vwapAligned && item.volumeRatio >= 0.8;
+      const signal: Signal =
+        bias !== 'WAIT' &&
+        !overextended &&
+        hasPullback &&
+        hasFreshBreak &&
+        confirmed
+          ? bias
+          : 'WAIT';
+      const entryState: EntryState =
+        bias === 'WAIT'
+          ? 'NO_BIAS'
+          : overextended
+            ? 'OVEREXTENDED'
+            : !hasPullback
+              ? 'WAIT_PULLBACK'
+              : !hasFreshBreak || !confirmed
+                ? 'WAIT_CONFIRM'
+                : 'READY';
+      const entryReason =
+        entryState === 'READY'
+          ? `回踩后重新突破，距 EMA20 ${extensionAtr.toFixed(2)} ATR`
+          : entryState === 'OVEREXTENDED'
+            ? `距 EMA20 ${extensionAtr.toFixed(2)} ATR 或连续脉冲过强，禁止追单`
+            : entryState === 'WAIT_PULLBACK'
+              ? `${bias === 'LONG' ? '多头' : '空头'}趋势成立，等待回踩 EMA20 / VWAP`
+              : entryState === 'WAIT_CONFIRM'
+                ? '已出现回踩，等待新突破、趋势与量能共同确认'
+                : '未进入强弱排名交易区';
       const intradayQualified =
-        signal !== 'WAIT' &&
+        bias !== 'WAIT' &&
         score >= 75 &&
         trendAligned &&
         item.volumeRatio >= 1 &&
-        item.h1Trend === signal;
+        item.h1Trend === bias;
       const swingQualified =
         intradayQualified &&
         score >= 88 &&
         item.volumeRatio >= 1.1 &&
-        item.h4Trend === signal &&
+        item.h4Trend === bias &&
         item.h4Adx >= 18;
       const holdingStage: HoldingStage =
-        signal === 'WAIT'
+        bias === 'WAIT'
           ? 'WAIT'
           : swingQualified
             ? 'SWING'
@@ -934,7 +1036,7 @@ async function loadLiveInstrumentsV31() {
           : holdingStage === 'INTRADAY'
             ? 'V31 高分、量能达标，已收盘 1H 同向'
             : holdingStage === 'QUICK'
-              ? '仅按 V31 原始 15m 信号管理，尚未通过高周期升级'
+              ? 'V31 排名方向成立，但持仓尚未通过高周期升级'
               : '当前没有方向性开单信号';
       const holdingUpgrade =
         holdingStage === 'SWING'
@@ -949,6 +1051,10 @@ async function loadLiveInstrumentsV31() {
         rank,
         universeSize: all.length,
         signal,
+        bias,
+        entryState,
+        entryReason,
+        extensionAtr,
         strength,
         score,
         holdingStage,
@@ -965,6 +1071,10 @@ async function loadLiveInstrumentsV31() {
     universeSize: item.universeSize,
     assetClass: item.assetClass,
     signal: item.signal,
+    bias: item.bias,
+    entryState: item.entryState,
+    entryReason: item.entryReason,
+    extensionAtr: item.extensionAtr,
     strength: item.strength,
     score: item.score,
     trend: item.trend,
@@ -989,7 +1099,9 @@ async function loadLiveInstrumentsV31() {
       total: rows.length,
       stocks: rows.filter((item) => item.assetClass === 'US_STOCK').length,
       crypto: rows.filter((item) => item.assetClass === 'CRYPTO').length,
-      elite: rows.filter((item) => item.strength === 'S+').length,
+      elite: rows.filter(
+        (item) => item.strength === 'S+' && item.signal !== 'WAIT',
+      ).length,
       excluded,
     },
     closedAt: Math.max(...calculated.map((item) => item.closedAt)),
@@ -1600,7 +1712,7 @@ function SignalBadge({
   signal: Signal;
   strength?: SignalStrength;
 }) {
-  const elite = strength === 'S+';
+  const elite = strength === 'S+' && signal !== 'WAIT';
   return (
     <Badge
       className={`signal-badge ${
@@ -1618,6 +1730,31 @@ function SignalBadge({
       {elite && <Sparkles size={11} />}
     </Badge>
   );
+}
+
+function BiasBadge({ bias }: { bias?: Signal }) {
+  const value = bias ?? 'WAIT';
+  return (
+    <span
+      className={`bias-badge ${
+        value === 'LONG' ? 'long' : value === 'SHORT' ? 'short' : 'wait'
+      }`}
+    >
+      {value === 'LONG' ? '偏多趋势' : value === 'SHORT' ? '偏空趋势' : '中性'}
+    </span>
+  );
+}
+
+function getEntryStateLabel(state?: EntryState) {
+  return state === 'READY'
+    ? '可以开单'
+    : state === 'OVEREXTENDED'
+      ? '涨跌过远 · 禁止追单'
+      : state === 'WAIT_PULLBACK'
+        ? '等待回踩'
+        : state === 'WAIT_CONFIRM'
+          ? '等待重新突破'
+          : '无方向优势';
 }
 
 function H4PriorityBadge({ priority }: { priority?: H4Priority }) {
@@ -1755,7 +1892,8 @@ function ScanTable({
               <th>标的</th>
               <th>{isV32 ? '24H 强弱（4H）' : '4H 强弱'}</th>
               {isV32 && <th>4H 优先级</th>}
-              <th>信号</th>
+              {!isV32 && <th>趋势方向</th>}
+              <th>{isV32 ? '信号' : '可开单'}</th>
               <th>信号分</th>
               <th>持仓阶段</th>
               <th>观察时长</th>
@@ -1771,7 +1909,11 @@ function ScanTable({
             {rows.map((item) => (
               <tr
                 key={item.symbol}
-                className={item.strength === 'S+' ? 'signal-row-elite' : ''}
+                className={
+                  item.strength === 'S+' && item.signal !== 'WAIT'
+                    ? 'signal-row-elite'
+                    : ''
+                }
               >
                 <td>
                   <button
@@ -1808,8 +1950,18 @@ function ScanTable({
                     <H4PriorityBadge priority={item.h4Priority} />
                   </td>
                 )}
-                <td>
+                {!isV32 && (
+                  <td>
+                    <BiasBadge bias={item.bias ?? item.signal} />
+                  </td>
+                )}
+                <td className="entry-decision-cell">
                   <SignalBadge signal={item.signal} strength={item.strength} />
+                  {!isV32 && (
+                    <small className={`entry-state ${item.entryState?.toLowerCase() ?? ''}`}>
+                      {getEntryStateLabel(item.entryState)}
+                    </small>
+                  )}
                 </td>
                 <td>
                   <span
@@ -1894,7 +2046,7 @@ function StrongestSignals({
   const isV321 = strategy === 'rank-v321';
   const isV32 = strategy === 'rank-v32' || isV321;
   const strongest = rows
-    .filter((item) => item.strength === 'S+')
+    .filter((item) => item.strength === 'S+' && item.signal !== 'WAIT')
     .sort((a, b) => b.score - a.score)
     .slice(0, 4);
   return (
@@ -1904,11 +2056,11 @@ function StrongestSignals({
           <Zap size={14} />
         </span>
         <div>
-          <strong>{isV32 ? 'P1 15m 次级开单 · S+' : '最强信号 S+'}</strong>
+          <strong>{isV32 ? 'P1 15m 次级开单 · S+' : '当前可开单 · S+'}</strong>
           <small>
             {isV32
               ? `${isV321 ? 'V32.1' : 'V32'}：已收盘 4H / 1H 通过后，下一根 15m 开盘`
-              : '理论开单 = 下一根 15m K 线开盘'}{' '}
+              : '只有回踩后重新突破、乖离与量能合格才显示'}{' '}
             ·{' '}
             {closedAt
               ? `最近收盘 ${formatChinaTimeShort(closedAt)}`
@@ -1942,7 +2094,7 @@ function StrongestSignals({
           ))}
         </div>
       ) : (
-        <span className="elite-empty">当前没有同时满足全部 S+ 条件的标的</span>
+        <span className="elite-empty">当前没有可立即开单的 S+；趋势方向不等于入场指令</span>
       )}
     </div>
   );
@@ -1977,6 +2129,7 @@ function SignalCommandCenter({
   const candidateHolding = holdCandidate
     ? getHoldingProfile(holdCandidate, strategy)
     : null;
+  const strongestIsReady = strongest?.signal !== 'WAIT';
 
   const directionLabel = (item?: Instrument) => {
     if (!item) return '等待';
@@ -1990,7 +2143,7 @@ function SignalCommandCenter({
       <Card className="signal-focus-card">
         <CardHeader>
           <div className="focus-card-kicker">
-            <Zap size={15} /> 最强信号
+            <Zap size={15} /> {isV32 ? '最强信号' : 'V31 入场判断'}
           </div>
           <CardDescription>
             {strongest
@@ -1999,7 +2152,9 @@ function SignalCommandCenter({
           </CardDescription>
         </CardHeader>
         <CardContent>
-          <div className="focus-grade">{strongest?.strength ?? '—'}</div>
+          <div className="focus-grade">
+            {strongest ? (strongestIsReady ? strongest.strength : 'WAIT') : '—'}
+          </div>
           <div className="focus-score-row">
             <span>综合评分</span>
             <strong>{strongest ? `${strongest.score} / 99` : '—'}</strong>
@@ -2007,8 +2162,22 @@ function SignalCommandCenter({
           <div className="focus-checks">
             <span>
               <Check size={13} /> 方向一致性
-              <b>{directionLabel(strongest)}</b>
+              <b>
+                {isV32
+                  ? directionLabel(strongest)
+                  : strongest?.bias === 'LONG'
+                    ? '偏多'
+                    : strongest?.bias === 'SHORT'
+                      ? '偏空'
+                      : '中性'}
+              </b>
             </span>
+            {!isV32 && (
+              <span>
+                <Target size={13} /> 入场状态
+                <b>{getEntryStateLabel(strongest?.entryState)}</b>
+              </span>
+            )}
             <span>
               <Check size={13} /> 流动性
               <b>合格</b>
@@ -2187,7 +2356,7 @@ function Overview({
               ? 'V32.1 保留 V32 的已收盘多周期结构，只增加均量参与确认和 40% / 30% / 30% 退出。当前样本胜率与 PF 改善，但参数已接触该年度数据，因此只进入冻结前向观察。'
               : isV32
                 ? 'V32 已接入为独立多周期观察版：4H / 1H 条件只读取已收盘 K 线，15m 才负责触发。年度核心 PF 0.849、前半年不稳定，因此当前不具备前向模拟资格。'
-                : 'V31 已替换为主策略：低于 100 万 USDT 成交额或价差超过 0.30% 的合约直接剔除。持仓阶段只用于动态管理，未纳入原 V31 回测，不应视为收益承诺。'}
+                : 'V31 实时扫描已增加防追涨入场层：趋势排名与开单信号分开，只有回踩后重新突破、EMA20 乖离不超过 0.8 ATR 且量能合格才显示可开单。页面历史指标仍是原 V31 基线，不代表新规则表现。'}
           </span>
         </div>
         <button aria-label="查看风险说明" onClick={() => goTo('策略版本')}>
@@ -2374,7 +2543,15 @@ function Overview({
                 onClick={() => setMarket(option)}
                 className={market === option ? 'selected' : ''}
               >
-                {option}
+                {isV32
+                  ? option
+                  : option === 'LONG'
+                    ? '可开多'
+                    : option === 'SHORT'
+                      ? '可开空'
+                      : option === 'WAIT'
+                        ? '等待'
+                        : option}
               </button>
             ))}
           </fieldset>
@@ -2564,7 +2741,15 @@ function ScannerPage({
                 onClick={() => setMarket(option)}
                 className={market === option ? 'selected' : ''}
               >
-                {option}
+                {isV32
+                  ? option
+                  : option === 'LONG'
+                    ? '可开多'
+                    : option === 'SHORT'
+                      ? '可开空'
+                      : option === 'WAIT'
+                        ? '等待'
+                        : option}
               </button>
             ))}
           </fieldset>
@@ -2661,6 +2846,22 @@ function ScannerPage({
                 {!isV32 && selectedHolding && (
                   <>
                     <div>
+                      <span>排名趋势方向</span>
+                      <strong>
+                        {selected.bias === 'LONG'
+                          ? '偏多趋势'
+                          : selected.bias === 'SHORT'
+                            ? '偏空趋势'
+                            : '中性'}
+                      </strong>
+                      <em>方向不等于立即开单</em>
+                    </div>
+                    <div>
+                      <span>当前入场判断</span>
+                      <strong>{getEntryStateLabel(selected.entryState)}</strong>
+                      <em>{selected.entryReason ?? '等待下一根收盘确认'}</em>
+                    </div>
+                    <div>
                       <span>V31 持仓阶段</span>
                       <strong>{selectedHolding.label}</strong>
                       <em>参考观察 {selectedHolding.window}</em>
@@ -2738,9 +2939,9 @@ function ScannerPage({
                 )}
               </div>
               <div
-                className={`detail-note ${selected.strength === 'S+' ? 'elite' : ''}`}
+                className={`detail-note ${selected.strength === 'S+' && selected.signal !== 'WAIT' ? 'elite' : ''}`}
               >
-                {selected.strength === 'S+' ? (
+                {selected.strength === 'S+' && selected.signal !== 'WAIT' ? (
                   <Zap size={15} />
                 ) : (
                   <Check size={15} />
@@ -2752,11 +2953,11 @@ function ScannerPage({
                       ? `P0 4H 最高优先级开单已闭合：理论开单为下一根 4H 开盘。15m 次级开单尚未形成，可独立等待，不影响 P0 信号。`
                       : `${isV321 ? 'V32.1' : 'V32'} 当前没有完整的 4H → 1H → 15m 闭合条件；${isV321 ? '量比还必须达到 1.0x。' : ''}不把高分或强弱排名当作开单理由。`
                     : `${selected.h4Priority === 'P0-LONG' || selected.h4Priority === 'P0-SHORT' ? 'P0 与 P1 同时出现：' : 'P1 15m 次级开单：'}4H 与 1H 均已收盘确认，P1 理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。P0 与 P1 独立计时；止损和分批止盈仅是研究参考，不代表自动开仓。`
-                  : selected.strength === 'S+'
-                    ? `S+ 最强信号：排名、趋势、VWAP 与成交量一致；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。当前为“${selectedHolding?.label}”，参考观察 ${selectedHolding?.window}；已过开盘就等待新收盘，不追价。`
-                    : selected.signal === 'WAIT'
-                      ? '当前处于观察区，不生成方向性交易信号。'
-                      : `方向性条件已满足；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。不代表自动开仓。`}
+                  : selected.signal === 'WAIT'
+                    ? `${selected.entryReason ?? '当前不生成开单信号'}。趋势排名仅代表方向，必须等页面显示“可以开单”。`
+                    : selected.strength === 'S+'
+                      ? `S+ 可开单：已完成回踩与重新突破，距 EMA20 ${selected.extensionAtr?.toFixed(2) ?? '—'} ATR；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。当前为“${selectedHolding?.label}”，参考观察 ${selectedHolding?.window}。`
+                      : `入场条件已闭合；理论开单 ${formatChinaTimeShort(selected.closedAt)} 北京，${selectedTiming?.label}。不代表自动开仓。`}
               </div>
               <Button
                 className="full-button"
