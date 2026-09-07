@@ -4532,7 +4532,13 @@ function StrategyPage({
 }
 
 function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
-  const [enabled, setEnabled] = useState(true);
+  const secretsUrl = 'https://github.com/yutuda/yu/settings/secrets/actions';
+  const workflowUrl =
+    'https://github.com/yutuda/yu/actions/workflows/telegram-alerts.yml';
+  const openExternal = (url: string, message: string) => {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    setToast(message);
+  };
   return (
     <>
       <SectionHeading
@@ -4557,42 +4563,38 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
           </CardHeader>
           <CardContent>
             <div className="alert-state">
-              <span className={`state-dot ${enabled ? 'on' : 'off'}`} />
+              <span className="state-dot off" />
               <div>
-                <strong>{enabled ? '研究告警已启用' : '研究告警已暂停'}</strong>
+                <strong>服务器接入待配置</strong>
                 <small>
-                  {enabled
-                    ? 'P0 在下一根 4H 开盘提醒；P1 在下一根 15m 开盘提醒。两者独立发送。'
-                    : '重新开启后才会生成通知。'}
+                  通知程序已经部署；添加两个 GitHub 加密密钥后，每 15
+                  分钟自动检查，没信号时保持静默。
                 </small>
               </div>
-              <button
-                type="button"
-                aria-label="启用或暂停研究告警"
-                aria-pressed={enabled}
-                className={`toggle ${enabled ? 'on' : ''}`}
-                onClick={() => setEnabled(!enabled)}
-              >
-                <span />
-              </button>
+              <Badge className="status-badge warning">待密钥</Badge>
             </div>
             <div className="secret-placeholder">
-              <span>BOT_TOKEN</span>
-              <strong>未配置</strong>
-              <small>出于安全原因，令牌不会显示在页面。</small>
+              <span>TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID</span>
+              <strong>GitHub Secrets</strong>
+              <small>
+                只由 GitHub Actions 在服务器端读取，网页与仓库都看不到明文。
+              </small>
             </div>
             <div className="alert-actions">
               <Button
-                onClick={() => setToast('测试消息已加入本地发送队列')}
-                disabled={!enabled}
+                onClick={() =>
+                  openExternal(secretsUrl, '已打开 GitHub 加密密钥配置页')
+                }
               >
-                <Send size={15} /> 发送测试消息
+                <Settings2 size={15} /> 配置加密密钥
               </Button>
               <Button
                 variant="outline"
-                onClick={() => setToast('告警规则设置已打开')}
+                onClick={() =>
+                  openExternal(workflowUrl, '已打开 Telegram 连接测试页')
+                }
               >
-                <Settings2 size={15} /> 告警规则
+                <Send size={15} /> 运行连接测试
               </Button>
             </div>
           </CardContent>

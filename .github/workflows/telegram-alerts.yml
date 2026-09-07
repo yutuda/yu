@@ -1,0 +1,72 @@
+name: Telegram research alerts
+
+on:
+  schedule:
+    # Offset from the quarter-hour so Gate has time to finalize the candle.
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Run a normal scan or send one connection test
+        required: true
+        default: test
+        type: choice
+        options:
+          - test
+          - discover-chat
+          - scan
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-research-alerts
+  cancel-in-progress: true
+
+jobs:
+  alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      ALERT_STATE_FILE: .cache/telegram-alerts.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Restore alert de-duplication state
+        if: github.event_name == 'schedule' || inputs.mode == 'scan'
+        uses: actions/cache/restore@v4
+        with:
+          path: .cache/telegram-alerts.json
+          key: telegram-alert-state-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: telegram-alert-state-
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: scripts/requirements-alerts.txt
+      - name: Install scanner dependencies
+        run: python -m pip install -r scripts/requirements-alerts.txt
+      - name: Send connection test
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'test'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/telegram_signal_bot.py --test
+      - name: Discover Telegram chat ID
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'discover-chat'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        run: python scripts/telegram_signal_bot.py --discover-chat
+      - name: Scan closed candles
+        if: github.event_name == 'schedule' || inputs.mode == 'scan'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scripts/telegram_signal_bot.py
+      - name: Save alert de-duplication state
+        if: always() && (github.event_name == 'schedule' || inputs.mode == 'scan')
+        uses: actions/cache/save@v4
+        with:
+          path: .cache/telegram-alerts.json
+          key: telegram-alert-state-${{ github.run_id }}-${{ github.run_attempt }}
