@@ -6,8 +6,9 @@ const geistSans = Geist({ variable: '--font-geist-sans', subsets: ['latin'] });
 const geistMono = Geist_Mono({ variable: '--font-geist-mono', subsets: ['latin'] });
 
 export const metadata: Metadata = {
-  title: 'Gate Quant Lab · V31 全市场扫描',
-  description: '剔除低流动性合约后扫描 Gate 美股永续与主流加密合约，提供强弱排名、分级信号、回测与风险研究。',
+  title: 'Gate Quant Lab · V33 首次回踩研究',
+  description:
+    'V31 保留，V33 以整理区突破、首次回踩和收盘重夺扫描 Gate 美股永续与主流加密合约。',
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
