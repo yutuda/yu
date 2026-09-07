@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
@@ -644,16 +644,64 @@ function getEntryTiming(timestamp: number, signal: Signal) {
 }
 
 async function fetchGateJson<T>(path: string): Promise<T> {
+  const now = Date.now();
+  const cached = gateResponseCache.get(path);
+  if (cached?.value !== undefined && cached.expiresAt > now) {
+    return cached.value as T;
+  }
+  if (cached?.promise) return cached.promise as Promise<T>;
+
+  const ttl = gateCacheTtl(path, now);
   const separator = path.includes('?') ? '&' : '?';
-  const response = await fetch(
-    `${GATE_API}${path}${separator}_=${Date.now()}`,
-    {
+  const promise = fetch(`${GATE_API}${path}${separator}_=${now}`, {
       cache: 'no-store',
       headers: { Accept: 'application/json' },
-    },
-  );
-  if (!response.ok) throw new Error(`Gate API ${response.status}`);
-  return response.json() as Promise<T>;
+    })
+    .then((response) => {
+      if (!response.ok) throw new Error(`Gate API ${response.status}`);
+      return response.json() as Promise<T>;
+    })
+    .then((value) => {
+      gateResponseCache.set(path, {
+        value,
+        expiresAt: Date.now() + ttl,
+      });
+      return value;
+    })
+    .catch((error) => {
+      gateResponseCache.delete(path);
+      throw error;
+    });
+  gateResponseCache.set(path, { promise, expiresAt: now + ttl });
+  return promise;
+}
+
+type GateCacheEntry = {
+  value?: unknown;
+  promise?: Promise<unknown>;
+  expiresAt: number;
+};
+
+const gateResponseCache = new Map<string, GateCacheEntry>();
+
+function millisecondsToNextBoundary(now: number, seconds: number) {
+  const boundary = seconds * 1000;
+  return boundary - (now % boundary) + 5_000;
+}
+
+function gateCacheTtl(path: string, now: number) {
+  if (path === '/contracts') return 10 * 60_000;
+  if (path === '/tickers') return 30_000;
+  if (path.includes('interval=4h')) {
+    return millisecondsToNextBoundary(now, 4 * 60 * 60);
+  }
+  if (path.includes('interval=1h')) {
+    return millisecondsToNextBoundary(now, 60 * 60);
+  }
+  if (path.includes('interval=15m')) {
+    return millisecondsToNextBoundary(now, 15 * 60);
+  }
+  return 30_000;
 }
 
 function clamp(value: number, min: number, max: number) {
@@ -1764,10 +1812,60 @@ async function loadLiveInstrumentsV32(strategy: 'rank-v32' | 'rank-v321') {
   };
 }
 
-async function loadLiveInstruments(strategy: StrategyKey) {
+type LiveScanResult = {
+  rows: Instrument[];
+  stats: ScanStats;
+  closedAt: number;
+};
+
+const activeScans = new Map<StrategyKey, Promise<LiveScanResult>>();
+const STORED_SCAN_PREFIX = 'gate-quant-lab:scan:v2:';
+
+function readStoredScan(strategy: StrategyKey) {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(`${STORED_SCAN_PREFIX}${strategy}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as LiveScanResult & { updatedAt: number };
+    if (!Array.isArray(parsed.rows) || !parsed.stats || !parsed.closedAt) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function storeScan(
+  strategy: StrategyKey,
+  result: LiveScanResult,
+  updatedAt: number,
+) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      `${STORED_SCAN_PREFIX}${strategy}`,
+      JSON.stringify({ ...result, updatedAt }),
+    );
+  } catch {
+    // Storage is an acceleration layer only; live scanning remains available.
+  }
+}
+
+async function performLiveScan(strategy: StrategyKey) {
   return strategy === 'rank-v32' || strategy === 'rank-v321'
     ? loadLiveInstrumentsV32(strategy)
     : loadLiveInstrumentsV31(strategy === 'rank-v33' ? 'rank-v33' : 'rank-v31');
+}
+
+async function loadLiveInstruments(strategy: StrategyKey) {
+  const existing = activeScans.get(strategy);
+  if (existing) return existing;
+  const request = performLiveScan(strategy).finally(() => {
+    activeScans.delete(strategy);
+  });
+  activeScans.set(strategy, request);
+  return request;
 }
 
 const leverageTests = [
@@ -4572,45 +4670,81 @@ export default function Home() {
   const [dataState, setDataState] = useState<DataState>('loading');
   const [refreshing, setRefreshing] = useState(false);
   const [toast, setToast] = useState('');
+  const refreshRequestId = useRef(0);
+  const refreshingStrategy = useRef<StrategyKey | null>(null);
 
   const runRefresh = useCallback(
     async (notify = true) => {
+      const strategyAtStart = selectedStrategy;
+      if (refreshingStrategy.current === strategyAtStart) {
+        if (notify) setToast('当前扫描仍在进行，不会重复请求');
+        return;
+      }
+      const requestId = ++refreshRequestId.current;
+      refreshingStrategy.current = strategyAtStart;
       setRefreshing(true);
       if (notify) setToast('正在读取 Gate 最新公开行情…');
       try {
-        const result = await loadLiveInstruments(selectedStrategy);
+        const result = await loadLiveInstruments(strategyAtStart);
+        if (requestId !== refreshRequestId.current) return;
+        const updatedAt = Date.now();
         setInstruments(result.rows);
         setScanStats(result.stats);
         setClosedAt(result.closedAt);
-        setLastUpdatedAt(new Date());
+        setLastUpdatedAt(new Date(updatedAt));
         setDataState('live');
+        storeScan(strategyAtStart, result, updatedAt);
         if (notify) setToast('扫描完成：实时行情已更新');
       } catch (error) {
         console.error(error);
+        if (requestId !== refreshRequestId.current) return;
         setDataState('error');
         if (notify) setToast('Gate 行情连接失败，已保留上次数据');
       } finally {
-        setRefreshing(false);
-        if (notify) window.setTimeout(() => setToast(''), 2600);
+        if (refreshingStrategy.current === strategyAtStart) {
+          refreshingStrategy.current = null;
+        }
+        if (requestId === refreshRequestId.current) {
+          setRefreshing(false);
+          if (notify) window.setTimeout(() => setToast(''), 2600);
+        }
       }
     },
     [selectedStrategy],
   );
 
   useEffect(() => {
+    const cached = readStoredScan(selectedStrategy);
+    if (cached) {
+      setInstruments(cached.rows);
+      setScanStats(cached.stats);
+      setClosedAt(cached.closedAt);
+      setLastUpdatedAt(new Date(cached.updatedAt));
+      setDataState('live');
+    }
     void runRefresh(false);
     const timer = window.setInterval(() => void runRefresh(false), 60_000);
     return () => window.clearInterval(timer);
-  }, [runRefresh]);
+  }, [runRefresh, selectedStrategy]);
   const goTo = (page: Page) => {
     setActiveNav(page);
     setToast(`已打开${page}`);
   };
   const chooseStrategy = (strategy: StrategyKey) => {
+    refreshRequestId.current += 1;
     setSelectedStrategy(strategy);
-    setDataState('loading');
-    setInstruments([]);
-    setClosedAt(null);
+    const cached = readStoredScan(strategy);
+    if (cached) {
+      setInstruments(cached.rows);
+      setScanStats(cached.stats);
+      setClosedAt(cached.closedAt);
+      setLastUpdatedAt(new Date(cached.updatedAt));
+      setDataState('live');
+    } else {
+      setDataState('loading');
+      setInstruments([]);
+      setClosedAt(null);
+    }
     setActiveNav('策略版本');
     setToast(
       `${strategyCatalog[strategy].name} ${strategyCatalog[strategy].version} 已选中`,
