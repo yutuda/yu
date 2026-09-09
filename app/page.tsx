@@ -3420,7 +3420,7 @@ function ScannerPage({
                   <strong>{selected.vwap}</strong>
                 </div>
                 <div>
-                  <span>ATR(14)</span>
+                  <span>ATR(15)</span>
                   <strong>{selected.atr}</strong>
                 </div>
                 <div>
