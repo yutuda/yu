@@ -1,0 +1,28 @@
+{
+  "strategy": "V34 Five-Minute Confirmation",
+  "period": "2025-09-01 to 2026-09-01",
+  "data": "40 Binance USD-M perpetual proxies; common 5m source aggregated to 15m",
+  "execution": "closed candles; next 5m open; zero fees/slippage/funding; same-bar stop first",
+  "account": "500 USDT; 5% planned risk; 10x gross cap; max 4 positions / 2 same direction",
+  "result": {
+    "trades": 1094,
+    "trades_per_day": 2.9973,
+    "win_rate_pct": 43.236,
+    "profit_factor": 0.8232,
+    "return_pct": -99.109,
+    "max_closed_equity_drawdown_pct": -99.289,
+    "stop_over_2pct_share": 7.31
+  },
+  "exits": {
+    "target_1_2r": 377,
+    "stop": 523,
+    "timeout_2h": 194
+  },
+  "target": {
+    "win_rate_pct": 65,
+    "profit_factor": 1.6,
+    "trades_per_day": 2
+  },
+  "passed": false,
+  "decision": "Research archive only. Do not generate entry prompts."
+}
