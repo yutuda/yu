@@ -90,7 +90,7 @@ type Instrument = {
   vwap: string;
   volume: string;
   volumeRatio: number;
-  timeframe?: 'V31' | 'V32' | 'V32.1' | 'V33' | 'V34';
+  timeframe?: 'V31' | 'V32' | 'V32.1' | 'V33' | 'V34' | 'V36';
   regimeClosedAt?: number;
   setup?: string;
   stop?: string;
@@ -108,6 +108,9 @@ type Instrument = {
   entryState?: EntryState;
   entryReason?: string;
   extensionAtr?: number;
+  regime?: 'TREND' | 'RANGE' | 'TRANSITION';
+  regimeDirection?: Signal;
+  regimeEfficiency?: number;
 };
 type ScanStats = {
   total: number;
@@ -124,6 +127,7 @@ type Page =
   | '策略版本'
   | '告警中心';
 type StrategyKey =
+  | 'rank-v36'
   | 'rank-v34'
   | 'rank-v33'
   | 'rank-v321'
@@ -143,6 +147,15 @@ const strategyCatalog: Record<
     mode: string;
   }
 > = {
+  'rank-v36': {
+    name: 'Composite Regime Research',
+    version: 'v36',
+    source: 'Gate V36 Composite Regime',
+    market: '40 个主流加密代理回测；Gate 实时行情仅作状态观察',
+    summary:
+      '4H 市场状态先区分趋势、震荡与过渡，再由 15m 价格回撤触发；年度联合目标未通过，只读展示，不生成开单许可。',
+    mode: '年度未通过 · 透明研究观察',
+  },
   'rank-v34': {
     name: 'Five-Minute Confirmation',
     version: 'v34',
@@ -209,6 +222,18 @@ const strategyMetrics: Record<
     exits: Array<{ name: string; value: number }>;
   }
 > = {
+  'rank-v36': {
+    trades: 1143,
+    compound: '+9.05%',
+    profitFactor: '1.030',
+    winRate: '49.87%',
+    drawdown: '-20.87%',
+    exits: [
+      { name: '盈利交易', value: 570 },
+      { name: '亏损交易', value: 572 },
+      { name: '保本交易', value: 1 },
+    ],
+  },
   'rank-v34': {
     trades: 1094,
     compound: '-99.11%',
@@ -391,6 +416,36 @@ const v34AnnualValidation = {
     compound: '-99.11%',
     drawdown: '-99.29%',
     stopOver2Pct: '7.31%',
+  },
+  target: '胜率 ≥ 65% · PF ≥ 1.6 · 账户成交 ≥ 2 笔/天',
+};
+
+const v36AnnualValidation = {
+  period: '2025-09-02 至 2026-09-02 · 365 天 · 15m / 已收盘 4H',
+  source: '40 个 Bybit USDT 永续公开 K 线代理；不是 Gate 成交或美股验证',
+  decision: 'FAIL · 频率通过，胜率与 PF 未通过，只读研究观察',
+  full: {
+    trades: 1143,
+    tradesPerDay: '3.46',
+    profitFactor: '1.030',
+    winRate: '49.87%',
+    compound: '+9.05%',
+    drawdown: '-20.87%',
+  },
+  frozen: {
+    trades: 477,
+    tradesPerDay: '3.61',
+    profitFactor: '1.130',
+    winRate: '52.62%',
+    compound: '+17.06%',
+    drawdown: '-17.54%',
+  },
+  stress5: {
+    trades: 850,
+    profitFactor: '0.992',
+    winRate: '50.47%',
+    compound: '-19.19%',
+    drawdown: '-90.25%',
   },
   target: '胜率 ≥ 65% · PF ≥ 1.6 · 账户成交 ≥ 2 笔/天',
 };
@@ -793,6 +848,52 @@ function candleAtr(candles: GateCandle[], index: number) {
     : Number.NaN;
 }
 
+function calculateV36Regime(candles: LiveCandle[]) {
+  if (candles.length < 60) {
+    return {
+      regime: 'TRANSITION' as const,
+      direction: 'WAIT' as Signal,
+      efficiency: 0,
+    };
+  }
+  const closes = candles.map((candle) => candle.close);
+  const latest = closes.at(-1)!;
+  const ema20Value = ema(closes, 20);
+  const ema50Value = ema(closes, 50);
+  const recent = closes.slice(-21);
+  const path = recent
+    .slice(1)
+    .reduce((sum, value, index) => sum + Math.abs(value - recent[index]), 0);
+  const efficiency = path > 0 ? Math.abs(latest - recent[0]) / path : 0;
+  const trueRanges = candles.slice(-120).map((candle, index, values) => {
+    const previousClose = index === 0 ? candle.open : values[index - 1].close;
+    return Math.max(
+      candle.high - candle.low,
+      Math.abs(candle.high - previousClose),
+      Math.abs(candle.low - previousClose),
+    );
+  });
+  const currentAtr =
+    trueRanges.slice(-14).reduce((sum, value) => sum + value, 0) /
+    Math.max(1, Math.min(14, trueRanges.length));
+  const sortedRanges = [...trueRanges].sort((left, right) => left - right);
+  const medianRange = sortedRanges[Math.floor(sortedRanges.length / 2)] || currentAtr;
+  const atrRatio = medianRange > 0 ? currentAtr / medianRange : 1;
+  const direction: Signal =
+    latest > ema20Value && ema20Value > ema50Value
+      ? 'LONG'
+      : latest < ema20Value && ema20Value < ema50Value
+        ? 'SHORT'
+        : 'WAIT';
+  const regime =
+    direction !== 'WAIT' && efficiency > 0.35
+      ? ('TREND' as const)
+      : efficiency < 0.2 && atrRatio <= 2.5
+        ? ('RANGE' as const)
+        : ('TRANSITION' as const);
+  return { regime, direction, efficiency };
+}
+
 function evaluateV33Entry(
   candles: GateCandle[],
   direction: Signal,
@@ -1153,6 +1254,9 @@ async function loadLiveInstrumentsV31(
       let h4Trend: Signal = 'WAIT';
       let h4Adx = 0;
       let regimeClosedAt: number | undefined;
+      let v36Regime: 'TREND' | 'RANGE' | 'TRANSITION' = 'TRANSITION';
+      let v36RegimeDirection: Signal = 'WAIT';
+      let v36RegimeEfficiency = 0;
       try {
         const tf1h = calculateTimeframeSnapshot(
           closedLiveCandles(raw1h, 60 * 60),
@@ -1192,6 +1296,10 @@ async function loadLiveInstrumentsV31(
               : 'WAIT';
         h4Adx = tf4h.adx;
         regimeClosedAt = tf4h.latest.time + 4 * 60 * 60;
+        const v36State = calculateV36Regime(tf4h.candles);
+        v36Regime = v36State.regime;
+        v36RegimeDirection = v36State.direction;
+        v36RegimeEfficiency = v36State.efficiency;
       } catch {
         // Higher-timeframe context is optional: V31's original 15m signal
         // remains available even when Gate cannot provide enough 1H/4H bars.
@@ -1214,6 +1322,9 @@ async function loadLiveInstrumentsV31(
         h4Trend,
         h4Adx,
         regimeClosedAt,
+        v36Regime,
+        v36RegimeDirection,
+        v36RegimeEfficiency,
         recentPullbackLong,
         recentPullbackShort,
         freshBreakLong,
@@ -1438,6 +1549,9 @@ async function loadLiveInstrumentsV31(
     holdingWindow: item.holdingWindow,
     holdingReason: item.holdingReason,
     holdingUpgrade: item.holdingUpgrade,
+    regime: item.v36Regime,
+    regimeDirection: item.v36RegimeDirection,
+    regimeEfficiency: item.v36RegimeEfficiency,
   }));
 
   return {
@@ -1892,6 +2006,43 @@ function storeScan(
 }
 
 async function performLiveScan(strategy: StrategyKey) {
+  if (strategy === 'rank-v36') {
+    const context = await loadLiveInstrumentsV31('rank-v33');
+    return {
+      ...context,
+      rows: context.rows.map((item) => {
+        const regimeLabel =
+          item.regime === 'TREND'
+            ? `4H 趋势${item.regimeDirection === 'LONG' ? '偏多' : item.regimeDirection === 'SHORT' ? '偏空' : ''}`
+            : item.regime === 'RANGE'
+              ? '4H 震荡'
+              : '4H 过渡状态';
+        const condition =
+          item.regime === 'TREND'
+            ? '只观察15m回踩EMA20/VWAP后重新突破，且乖离≤0.8 ATR、剩余空间≥1.2R'
+            : item.regime === 'RANGE'
+              ? '当前震荡分支历史PF接近1，暂不允许执行'
+              : '等待4H状态明确，不提前猜方向';
+        return {
+          ...item,
+          timeframe: 'V36' as const,
+          signal: 'WAIT' as const,
+          bias:
+            item.regime === 'TREND'
+              ? (item.regimeDirection ?? ('WAIT' as const))
+              : ('WAIT' as const),
+          strength: 'WATCH' as const,
+          entryState: 'RESEARCH_REJECTED' as const,
+          entryReason: `${regimeLabel}（效率 ${(100 * (item.regimeEfficiency ?? 0)).toFixed(1)}%）；${condition}。V36年度目标未通过，只读观察`,
+          holdingStage: 'WAIT' as const,
+          holdingWindow: '只读研究',
+          holdingReason: condition,
+          holdingUpgrade: '只有新样本达到65%胜率和1.6盈利因子后才考虑解锁',
+        };
+      }),
+      stats: { ...context.stats, elite: 0 },
+    };
+  }
   if (strategy === 'rank-v34') {
     const context = await loadLiveInstrumentsV31('rank-v33');
     return {
@@ -2014,6 +2165,14 @@ const equityV34 = [
   { time: '2026/09', value: 0.9 },
 ];
 
+const equityV36 = [
+  { time: '2025/09', value: 100.0 },
+  { time: '2025/12', value: 96.8 },
+  { time: '2026/03', value: 92.7 },
+  { time: '2026/06', value: 111.4 },
+  { time: '2026/09', value: 109.05 },
+];
+
 const performance = [
   { time: '08/18', value: 0.0 },
   { time: '08/19', value: 1.4 },
@@ -2101,6 +2260,29 @@ const strategyRulesV34 = [
   {
     title: '冻结失败结论',
     body: '一年期账户口径 1094 笔、3.00 笔/天、胜率 43.24%、PF 0.823。频率通过但质量失败，因此不提供开单信号。',
+    icon: ShieldCheck,
+  },
+];
+
+const strategyRulesV36 = [
+  {
+    title: '4H 市场状态先行',
+    body: '只使用已收盘4H：EMA20/50与20根效率值识别趋势；低效率且无异常波动归为震荡，其余归为过渡状态。',
+    icon: TrendingDown,
+  },
+  {
+    title: '趋势分支只做回撤重启',
+    body: '横截面前/后10名中，15m先回踩EMA20或VWAP，再收盘突破前一根高/低；距均线不得超过0.8 ATR。',
+    icon: Target,
+  },
+  {
+    title: '空间与分批退出',
+    body: '入场前要求距离前96根结构高/低至少还有1.2R空间；50%在1R退出、50%在2R退出。',
+    icon: Gauge,
+  },
+  {
+    title: '失败结论透明展示',
+    body: '全年1143笔、3.46笔/天、胜率49.87%、PF 1.030；冻结后段52.62%/1.130。未达65%/1.6，只读且不发开单许可。',
     icon: ShieldCheck,
   },
 ];
@@ -2364,11 +2546,12 @@ function ScanTable({
   const isV32 = strategy === 'rank-v32' || isV321;
   const isV33 = strategy === 'rank-v33';
   const isV34 = strategy === 'rank-v34';
-  const entryFirst = isV33 || isV34;
+  const isV36 = strategy === 'rank-v36';
+  const entryFirst = isV36 || isV33 || isV34;
   const h4PriorityCount = rows.filter(
     (item) => item.h4Priority && item.h4Priority !== 'WATCH',
   ).length;
-  const extendedHoldingCount = isV34
+  const extendedHoldingCount = isV36 || isV34
     ? 0
     : rows.filter(
         (item) =>
@@ -2515,6 +2698,8 @@ function ScanTable({
             ? 'Gate 行情暂时连接失败 · 保留上次数据'
             : isV32
               ? `${isV321 ? 'V32.1' : 'V32'} · 15m 最近收盘 · ${formatChinaTime(closedAt)} · 仅在已收盘 4H / 1H 条件通过后，理论开单为下一根 15m 开盘`
+              : isV36
+                ? `V36 · ${formatChinaTime(closedAt)} · 显示已收盘4H状态与15m条件，不生成开单许可`
               : isV34
                 ? `V34 · ${formatChinaTime(closedAt)} · 年度验证失败，只显示行情背景，不生成开单提示`
                 : isV33
@@ -2532,7 +2717,9 @@ function ScanTable({
           <span>P0 = 4H 开单 {h4PriorityCount} 个 · P1 = 15m 开单</span>
         ) : (
           <span>
-            {isV34
+            {isV36
+              ? 'V36只读研究 · 状态和评分都不是胜率或开单许可'
+              : isV34
               ? 'V34 已冻结 · 评分不是胜率或开单许可'
               : `持仓升级 ${extendedHoldingCount} 个 · 仅作动态管理参考`}
           </span>
@@ -2554,6 +2741,7 @@ function StrongestSignals({
   const isV321 = strategy === 'rank-v321';
   const isV32 = strategy === 'rank-v32' || isV321;
   const isV34 = strategy === 'rank-v34';
+  const isV36 = strategy === 'rank-v36';
   const strongest = rows
     .filter((item) => item.strength === 'S+' && item.signal !== 'WAIT')
     .sort((a, b) => b.score - a.score)
@@ -2567,7 +2755,9 @@ function StrongestSignals({
         <div>
           <strong>{isV32 ? 'P1 15m 次级开单 · S+' : '当前可开单 · S+'}</strong>
           <small>
-            {isV34
+            {isV36
+              ? 'V36 综合状态研究 · 不生成开单许可'
+              : isV34
               ? 'V34 失败研究档案 · 行情背景只读'
               : isV32
               ? `${isV321 ? 'V32.1' : 'V32'}：已收盘 4H / 1H 通过后，下一根 15m 开盘`
@@ -2624,6 +2814,7 @@ function SignalCommandCenter({
   const isV32 = strategy === 'rank-v32' || strategy === 'rank-v321';
   const isV33 = strategy === 'rank-v33';
   const isV34 = strategy === 'rank-v34';
+  const isV36 = strategy === 'rank-v36';
   const ranked = [...rows].sort((a, b) => b.score - a.score);
   const strongest =
     ranked.find((item) => item.strength === 'S+' && item.signal !== 'WAIT') ??
@@ -2632,8 +2823,8 @@ function SignalCommandCenter({
   const p0 = ranked.find(
     (item) => item.h4Priority === 'P0-LONG' || item.h4Priority === 'P0-SHORT',
   );
-  const p1 = isV34 ? undefined : ranked.find((item) => item.signal !== 'WAIT');
-  const holdCandidate = isV34
+  const p1 = isV36 || isV34 ? undefined : ranked.find((item) => item.signal !== 'WAIT');
+  const holdCandidate = isV36 || isV34
     ? undefined
     : ranked.find((item) => item.holdingStage === 'SWING') ??
       ranked.find((item) => item.holdingStage === 'INTRADAY');
@@ -2661,6 +2852,8 @@ function SignalCommandCenter({
             <Zap size={15} />{' '}
             {isV32
               ? '最强信号'
+              : isV36
+                ? 'V36 4H状态判断'
               : isV34
                 ? 'V34 研究结论'
                 : isV33
@@ -2862,6 +3055,7 @@ function Overview({
   scanStats: ScanStats;
 }) {
   const selectedStrategy = strategyCatalog[strategy];
+  const isV36 = strategy === 'rank-v36';
   const isV321 = strategy === 'rank-v321';
   const isV32 = strategy === 'rank-v32' || isV321;
   const isV33 = strategy === 'rank-v33';
@@ -2881,7 +3075,9 @@ function Overview({
     strategy === 'rank-v1' ? 'rank-v31' : strategy;
   const metrics = strategyMetrics[testedKey];
   const chartData =
-    testedKey === 'rank-v34'
+    testedKey === 'rank-v36'
+      ? equityV36
+      : testedKey === 'rank-v34'
       ? equityV34
       : testedKey === 'rank-v33'
       ? equityV33
@@ -2893,6 +3089,8 @@ function Overview({
   const isV31 = strategy === 'rank-v31';
   const validationWindow = isV321
     ? `${v321AnnualValidation.period} · ${v321AnnualValidation.primary.trades} 核心 / ${v321AnnualValidation.broad.trades} 全篮子`
+    : isV36
+      ? `${v36AnnualValidation.period} · ${v36AnnualValidation.full.trades} 笔账户成交`
     : isV34
       ? `${v34AnnualValidation.period} · ${v34AnnualValidation.full.trades} 笔账户成交`
       : isV33
@@ -2932,7 +3130,9 @@ function Overview({
         <div>
           <strong>研究提示</strong>
           <span>
-            {isV34
+            {isV36
+              ? 'V36 将已收盘4H状态与15m趋势回撤结合。全年3.46笔/天，但胜率49.87%、PF 1.030；冻结后段为52.62%/1.130，仍明显低于65%/1.6。页面只显示状态与规则，不生成开单许可。'
+              : isV34
               ? 'V34 的 5m 确认把频率提高到 3.00 笔/天，但胜率仅 43.24%、PF 0.823，账户回撤 -99.29%。V34 已冻结为失败研究版，实时页不生成任何开单提示。'
               : isV321
               ? 'V32.1 保留 V32 的已收盘多周期结构，只增加均量参与确认和 40% / 30% / 30% 退出。当前样本胜率与 PF 改善，但参数已接触该年度数据，因此只进入冻结前向观察。'
@@ -2952,14 +3152,16 @@ function Overview({
           label="复合收益"
           value={metrics.compound}
           detail={validationWindow}
-          tone={isV34 || isV33 || (isV32 && !isV321) ? 'negative' : 'positive'}
+          tone={isV36 || isV34 || isV33 || (isV32 && !isV321) ? 'negative' : 'positive'}
           icon={TrendingDown}
         />
         <MetricCard
           label="利润因子"
           value={metrics.profitFactor}
           detail={
-            isV34
+            isV36
+              ? '40 个加密代理账户 · 目标 1.6 未通过'
+              : isV34
               ? '40 个加密代理账户 · 目标 1.6 未通过'
               : isV321
               ? '等风险 PF / 原始 PF · 核心八币种'
@@ -2969,14 +3171,16 @@ function Overview({
                   ? '核心八币种 · 前后半年稳定性未通过'
                   : '当前所选策略'
           }
-          tone={isV34 || isV33 || (isV32 && !isV321) ? 'negative' : 'positive'}
+          tone={isV36 || isV34 || isV33 || (isV32 && !isV321) ? 'negative' : 'positive'}
           icon={Gauge}
         />
         <MetricCard
           label="胜率"
           value={metrics.winRate}
           detail={
-            isV34
+            isV36
+              ? '3.46 笔/天 · 目标 65% 未通过'
+              : isV34
               ? '3.00 笔/天 · 目标 65% 未通过'
               : isV321
               ? '核心八币种 · V32 为 55.91%'
@@ -2986,7 +3190,7 @@ function Overview({
                   ? '核心八币种 · 已收盘多周期条件'
                   : `${metrics.trades} 笔交易`
           }
-          tone={isV32 || isV33 || isV34 ? 'warning' : 'neutral'}
+          tone={isV36 || isV32 || isV33 || isV34 ? 'warning' : 'neutral'}
           icon={Activity}
         />
         <MetricCard
@@ -3004,7 +3208,7 @@ function Overview({
               <CardTitle>策略净值曲线</CardTitle>
               <CardDescription>
                 {selectedStrategy.name} {selectedStrategy.version} · 15 分钟 ·
-                {isV32 || isV31 || isV33 || isV34
+                {isV36 || isV32 || isV31 || isV33 || isV34
                   ? '年度主测试 · 季度端点 · 零成本'
                   : '约 41 天零成本回放'}
               </CardDescription>
@@ -3591,7 +3795,9 @@ function GateBacktestPage({
   const metrics = strategyMetrics[strategy];
   const currentExitBreakdown = metrics.exits;
   const chartData =
-    strategy === 'rank-v34'
+    strategy === 'rank-v36'
+      ? equityV36
+      : strategy === 'rank-v34'
       ? equityV34
       : strategy === 'rank-v33'
       ? equityV33
@@ -3605,6 +3811,7 @@ function GateBacktestPage({
   const isV31 = strategy === 'rank-v31';
   const isV33 = strategy === 'rank-v33';
   const isV34 = strategy === 'rank-v34';
+  const isV36 = strategy === 'rank-v36';
   const runBacktest = () => {
     setRunning(true);
     setToast('正在按当前参数重放本地报告…');
@@ -3627,7 +3834,9 @@ function GateBacktestPage({
               {selected.name} {selected.version}
             </CardTitle>
             <CardDescription>
-              {isV34
+              {isV36
+                ? '综合状态年度目标未通过 · 只读研究观察'
+                : isV34
                 ? '5m 确认年度验证失败 · 禁止作为开单依据'
                 : isV321
                 ? '当前约束通过 · 参数冻结后进入前向观察'
@@ -3647,7 +3856,7 @@ function GateBacktestPage({
                 <select
                   id="backtest-interval"
                   defaultValue={
-                    isV34 ? '15m 候选 / 5m 确认' : isV32 || isV33 ? '15m / 1h / 4h' : '15m'
+                    isV34 ? '15m 候选 / 5m 确认' : isV36 || isV32 || isV33 ? '15m / 1h / 4h' : '15m'
                   }
                 >
                   <option>15m</option>
@@ -3699,7 +3908,7 @@ function GateBacktestPage({
                 <select
                   id="backtest-target"
                   defaultValue={
-                    isV32 ? 'TP1 1R / TP2 2R' : isV33 || isV34 ? '1.2' : '2.0'
+                    isV36 || isV32 ? 'TP1 1R / TP2 2R' : isV33 || isV34 ? '1.2' : '2.0'
                   }
                 >
                   <option>2.0 R</option>
@@ -3760,13 +3969,15 @@ function GateBacktestPage({
             <div>
               <CardTitle>结果摘要</CardTitle>
               <CardDescription>
-                {isV32 || isV31 || isV33
-                  ? `${metrics.trades} 笔交易 · ${isV33 ? '一年期 40 标的代理账户' : '一年期核心八币种'} · 零成本`
+                {isV36 || isV32 || isV31 || isV33
+                  ? `${metrics.trades} 笔交易 · ${isV36 || isV33 ? '一年期 40 标的代理账户' : '一年期核心八币种'} · 零成本`
                   : `${metrics.trades} 笔交易 · 约 41 天零成本回放`}
               </CardDescription>
             </div>
             <Badge className="status-badge warning">
-              {isV321
+              {isV36
+                ? '年度未通过'
+                : isV321
                 ? '冻结观察'
                 : isV33
                   ? '年度未通过'
@@ -3814,7 +4025,9 @@ function GateBacktestPage({
                 />
                 <YAxis
                   domain={
-                    isV33
+                    isV36
+                      ? [85, 120]
+                      : isV33
                       ? [90, 260]
                       : isV321
                         ? [95, 130]
@@ -3845,14 +4058,16 @@ function GateBacktestPage({
           </CardContent>
         </Card>
       </div>
-      {(isV32 || isV31 || isV33) && (
+      {(isV36 || isV32 || isV31 || isV33) && (
         <Card className="exit-card">
           <CardHeader>
             <CardTitle>
               {isV321 ? '年度候选筛选 · 结论' : '年度独立验证 · 结论'}
             </CardTitle>
             <CardDescription>
-              {isV321
+              {isV36
+                ? v36AnnualValidation.period
+                : isV321
                 ? v321AnnualValidation.period
                 : isV33
                   ? v33AnnualValidation.period
@@ -3860,7 +4075,9 @@ function GateBacktestPage({
                     ? v32AnnualValidation.period
                     : v31AnnualValidation.period}
               ；
-              {isV321
+              {isV36
+                ? v36AnnualValidation.source
+                : isV321
                 ? v321AnnualValidation.source
                 : isV33
                   ? v33AnnualValidation.source
@@ -3874,7 +4091,9 @@ function GateBacktestPage({
               <div>
                 <span>主测试</span>
                 <strong>
-                  {isV321
+                  {isV36
+                    ? v36AnnualValidation.full.trades
+                    : isV321
                     ? v321AnnualValidation.primary.trades
                     : isV33
                       ? v33AnnualValidation.full.trades
@@ -3887,7 +4106,9 @@ function GateBacktestPage({
               <div>
                 <span>全篮子复核</span>
                 <strong>
-                  {isV321
+                  {isV36
+                    ? v36AnnualValidation.frozen.trades
+                    : isV321
                     ? v321AnnualValidation.broad.trades
                     : isV33
                       ? v33AnnualValidation.secondHalf.trades
@@ -3898,9 +4119,11 @@ function GateBacktestPage({
                 </strong>
               </div>
               <div>
-                <span>{isV33 ? '全年 / 后半年 PF' : '全篮子 PF'}</span>
+                <span>{isV36 ? '全年 / 冻结后段 PF' : isV33 ? '全年 / 后半年 PF' : '全篮子 PF'}</span>
                 <strong>
-                  {isV321
+                  {isV36
+                    ? `${v36AnnualValidation.full.profitFactor} / ${v36AnnualValidation.frozen.profitFactor}`
+                    : isV321
                     ? `${v321AnnualValidation.broad.riskProfitFactor} 等风险 / ${v321AnnualValidation.broad.rawProfitFactor} 原始`
                     : isV33
                       ? `${v33AnnualValidation.full.profitFactor} / ${v33AnnualValidation.secondHalf.profitFactor}`
@@ -3909,7 +4132,14 @@ function GateBacktestPage({
                         : v31AnnualValidation.broad.profitFactor}
                 </strong>
               </div>
-              {isV33 ? (
+              {isV36 ? (
+                <div>
+                  <span>账户成交频率</span>
+                  <strong className="negative-text">
+                    {v36AnnualValidation.full.tradesPerDay} 笔/天
+                  </strong>
+                </div>
+              ) : isV33 ? (
                 <div>
                   <span>账户成交频率</span>
                   <strong className="negative-text">
@@ -3940,7 +4170,9 @@ function GateBacktestPage({
             </div>
             <div className="cost-warning">
               <AlertTriangle size={15} /> 四个时间段 PF：
-              {isV321
+              {isV36
+                ? 'V36 使用前60%选择、后40%冻结检查'
+                : isV321
                 ? v321AnnualValidation.quarterlyRiskProfitFactors
                 : isV33
                   ? 'V33 使用前后半年冻结检查'
@@ -3948,7 +4180,9 @@ function GateBacktestPage({
                     ? v32AnnualValidation.quarterlyProfitFactors
                     : v31AnnualValidation.quarterlyProfitFactors}
               。
-              {isV321
+              {isV36
+                ? `V36 全年胜率 ${v36AnnualValidation.full.winRate}、PF ${v36AnnualValidation.full.profitFactor}、${v36AnnualValidation.full.tradesPerDay} 笔/天；冻结后段胜率 ${v36AnnualValidation.frozen.winRate}、PF ${v36AnnualValidation.frozen.profitFactor}。5%风险压力测试最大回撤 ${v36AnnualValidation.stress5.drawdown}。目标是 ${v36AnnualValidation.target}，因此只读观察。`
+                : isV321
                 ? `V32.1 保留 359 笔（原 V32 的 75.58%），胜率 55.99%；全篮子等风险 PF 1.357、原始 PF 1.232。${v321AnnualValidation.halfYear.broad}；核心为 ${v321AnnualValidation.halfYear.core}。第四段等风险 PF 仅 1.066，且规则从同一年度样本中选出，所以只能冻结前向观察。`
                 : isV33
                   ? `V33 全年胜率 ${v33AnnualValidation.full.winRate}、PF ${v33AnnualValidation.full.profitFactor}、${v33AnnualValidation.full.tradesPerDay} 笔/天；后半年胜率 ${v33AnnualValidation.secondHalf.winRate}、PF ${v33AnnualValidation.secondHalf.profitFactor}。目标是 ${v33AnnualValidation.target}，三项均未同时达到。带星号复合收益来自 500 USDT、每笔风险 5% 且忽略所有成本的高风险复利演示，不可视为预期收益。`
@@ -4386,7 +4620,10 @@ function StrategyPage({
   const isV31 = strategy === 'rank-v31';
   const isV33 = strategy === 'rank-v33';
   const isV34 = strategy === 'rank-v34';
-  const rules = isV34
+  const isV36 = strategy === 'rank-v36';
+  const rules = isV36
+    ? strategyRulesV36
+    : isV34
     ? strategyRulesV34
     : isV33
     ? strategyRulesV33
@@ -4403,7 +4640,9 @@ function StrategyPage({
         kicker="Strategy registry"
         title="策略版本"
         description={
-          isV34
+          isV36
+            ? 'v36 是综合市场状态研究版：先区分4H趋势、震荡与过渡，再测试15m回撤。全年频率达标，但胜率与盈利因子未通过，只读展示且不产生开单许可。'
+            : isV34
             ? 'v34 将 V33 的 15m 候选交给随后 3 根已收盘 5m K 线确认。它完成了全年测试，但胜率和盈利因子明显失败，因此只保留透明研究结果，实时扫描不会生成开单提示。'
             : isV33
             ? 'v33 是独立的“顺势首次回踩”研究版，V31 完整保留。它专门解决趋势已涨很高仍提示追多的问题；一年期联合目标未通过，所以不会标成可实盘。'
@@ -4418,7 +4657,9 @@ function StrategyPage({
         <div>
           <div className="version-row">
             <Badge className="version-badge">
-              {isV34
+              {isV36
+                ? 'v36 · COMPOSITE REGIME · FAILED'
+                : isV34
                 ? 'v34 · 5M CONFIRM · FAILED'
                 : isV33
                 ? 'v33 · FIRST PULLBACK'
@@ -4432,7 +4673,9 @@ function StrategyPage({
           </div>
           <h2>{selected.name}</h2>
           <p>
-            {isV34
+            {isV36
+              ? 'V36 最佳分支为4H趋势状态＋15m价格回撤＋50%@1R/50%@2R。全年1143笔、3.46笔/天、胜率49.87%、PF 1.030；冻结后段477笔、52.62%、PF 1.130。频率合格，质量未达到65%/1.6。'
+              : isV34
               ? 'V34 使用 15m 首次回踩候选与最多 3 根 5m 收盘确认。500 USDT、单笔计划风险 5%、总杠杆上限 10x、最多 4 个持仓的账户口径为 1094 笔、3.00 笔/天、胜率 43.24%、PF 0.823、最大回撤 -99.29%。只有频率达标，策略质量失败。'
               : isV33
               ? 'V33 先识别 12 根整理区突破，只把它登记为候选；随后只接受第一次回踩，并要求 3 根内收盘重夺、排名回到前/后 5、1H 同向且 4H 不反向。全年账户口径 258 笔、胜率 51.16%、PF 1.157、0.78 笔/天，未达到 65% / 1.6 / 2 笔目标。'
@@ -4449,7 +4692,9 @@ function StrategyPage({
           }
         >
           <Check size={15} />{' '}
-          {isV34
+          {isV36
+            ? '研究观察'
+            : isV34
             ? '失败归档'
             : isV321
             ? '冻结观察'
@@ -4466,7 +4711,9 @@ function StrategyPage({
             <CardTitle>信号规则</CardTitle>
             <CardDescription>
               来自{' '}
-              {isV34
+              {isV36
+                ? 'Gate_V36_Composite_Regime'
+                : isV34
                 ? 'Gate_V34_FiveMinute_Confirm'
                 : isV321
                 ? 'Gate_V32_1_PF_Balanced'
@@ -4496,7 +4743,9 @@ function StrategyPage({
           <CardHeader>
             <CardTitle>参数快照</CardTitle>
             <CardDescription>
-              {isV34
+              {isV36
+                ? 'V36Config · composite-regime'
+                : isV34
                 ? 'V34Config · 15m-candidate-5m-confirm'
                 : isV321
                 ? 'V321Config · participation-confirmed'
@@ -4512,7 +4761,9 @@ function StrategyPage({
               <div>
                 <dt>周期</dt>
                 <dd>
-                  {isV34
+                  {isV36
+                    ? '15m 触发 / 已收盘 4H 状态'
+                    : isV34
                     ? '15m 候选 / 5m 确认'
                     : isV32 || isV33
                       ? '15m 触发 / 1H / 4H'
@@ -4522,7 +4773,7 @@ function StrategyPage({
               <div>
                 <dt>EMA</dt>
                 <dd>
-                  {isV34 || isV33
+                  {isV36 || isV34 || isV33
                     ? '1H 20 / 50 · 4H 20 / 50'
                     : isV32
                       ? '4H 50 / 200 · 1H 20 / 50'
@@ -4532,7 +4783,9 @@ function StrategyPage({
               <div>
                 <dt>ATR</dt>
                 <dd>
-                  {isV32
+                  {isV36
+                    ? '结构止损 · Wilder ATR(14)'
+                    : isV32
                     ? 'max(2.0×15m, 1.25×1H)'
                     : isV34 || isV33
                       ? '结构止损 · 最少 1.25x'
@@ -4544,7 +4797,9 @@ function StrategyPage({
               <div>
                 <dt>目标</dt>
                 <dd>
-                  {isV321
+                  {isV36
+                    ? '50%@1R · 50%@2R'
+                    : isV321
                     ? '40%@1R · 30%@2R · 30% 跟踪'
                     : isV34 || isV33
                       ? '固定 1.2R'
@@ -4555,24 +4810,28 @@ function StrategyPage({
               </div>
               <div>
                 <dt>排名窗口</dt>
-                <dd>{isV32 ? '6 根已收盘 4H（24H）' : '16 根 K 线'}</dd>
+                <dd>{isV36 ? '20 根4H效率 / 16根15m排名' : isV32 ? '6 根已收盘 4H（24H）' : '16 根 K 线'}</dd>
               </div>
               <div>
                 <dt>排名数量</dt>
                 <dd>
-                  {isV32
+                  {isV36
+                    ? '趋势 Top / Bottom 10'
+                    : isV32
                     ? 'Top / Bottom 2'
                     : isV34 || isV33
                       ? '候选 10 · 开单 5'
                       : 'Top / Bottom 5（S+ 优先）'}
                 </dd>
               </div>
-              {(isV32 || isV31 || isV33 || isV34) && (
+              {(isV36 || isV32 || isV31 || isV33 || isV34) && (
                 <>
                   <div>
                     <dt>成交量比例</dt>
                     <dd>
-                      {isV321
+                      {isV36
+                        ? '不设量能确认（测试后反而变差）'
+                        : isV321
                         ? '≥ 1.0x'
                         : isV34
                           ? '5m ≥ 0.8x'
@@ -4586,7 +4845,9 @@ function StrategyPage({
                   <div>
                     <dt>质量上限</dt>
                     <dd>
-                      {isV32
+                      {isV36
+                        ? '效率 > 0.35 · 乖离 ≤ 0.8 ATR'
+                        : isV32
                         ? '4H ADX ≥ 18 · 15m ATR ≤ 4%'
                         : isV34
                           ? '确认窗口 3 根 5m'
@@ -4647,11 +4908,13 @@ function StrategyPage({
                       : '8 根 K 线'}
                 </dd>
               </div>
-              {(isV31 || isV32 || isV33 || isV34) && (
+              {(isV36 || isV31 || isV32 || isV33 || isV34) && (
                 <div>
                   <dt>单笔风险</dt>
                   <dd>
-                    {isV32
+                    {isV36
+                      ? '0.5%基准 · 5%压力测试失败'
+                      : isV32
                       ? '0.5% · 研究上限 5x'
                       : isV33 || isV34
                         ? '回测 5% · 总杠杆上限 10x'
@@ -4682,6 +4945,16 @@ function StrategyPage({
           </CardDescription>
         </CardHeader>
         <CardContent>
+          <div className={`history-row ${isV36 ? 'active' : ''}`}>
+            <span className={`history-dot ${isV36 ? '' : 'muted'}`} />
+            <div>
+              <strong>v36 · Composite Regime Research</strong>
+              <small>
+                全年1143笔 · 3.46笔/天 · PF 1.030 · 胜率49.87%；冻结后段PF 1.130、胜率52.62% · 质量目标未通过
+              </small>
+            </div>
+            <Badge className="status-badge danger">验证失败</Badge>
+          </div>
           <div className={`history-row ${isV34 ? 'active' : ''}`}>
             <span className={`history-dot ${isV34 ? '' : 'muted'}`} />
             <div>
@@ -4879,7 +5152,7 @@ function AlertsPage({ setToast }: { setToast: (message: string) => void }) {
 export default function Home() {
   const [activeNav, setActiveNav] = useState<Page>('总览');
   const [selectedStrategy, setSelectedStrategy] =
-    useState<StrategyKey>('rank-v33');
+    useState<StrategyKey>('rank-v36');
   const [instruments, setInstruments] =
     useState<Instrument[]>(initialInstruments);
   const [scanStats, setScanStats] = useState<ScanStats>(initialScanStats);
@@ -5033,6 +5306,14 @@ export default function Home() {
         <div className="sidebar-section-label">策略库</div>
         <div className="asset-list">
           <button
+            className={`asset-item ${selectedStrategy === 'rank-v36' ? 'selected' : ''}`}
+            onClick={() => chooseStrategy('rank-v36')}
+          >
+            <span className="asset-dot violet" />
+            Composite Regime Research{' '}
+            <span className="asset-version">v36 · FAIL</span>
+          </button>
+          <button
             className={`asset-item ${selectedStrategy === 'rank-v34' ? 'selected' : ''}`}
             onClick={() => chooseStrategy('rank-v34')}
           >
@@ -5149,7 +5430,7 @@ export default function Home() {
           {pageContent}
           <footer className="page-footer">
             <span>
-              Gate Quant Lab · V31 preserved + V33 + V34 failed research
+              Gate Quant Lab · V31 preserved + V33 / V34 / V36 research
             </span>
             <span>
               <ShieldCheck size={14} /> 不构成投资建议
