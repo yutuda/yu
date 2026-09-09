@@ -4596,7 +4596,9 @@ function StrategyPage({
         Object.entries(strategyCatalog) as Array<
           [StrategyKey, (typeof strategyCatalog)[StrategyKey]]
         >
-      ).map(([key, item]) => (
+      )
+        .filter(([key]) => key !== 'rank-v34')
+        .map(([key, item]) => (
         <button
           key={key}
           className={strategy === key ? 'selected' : ''}
@@ -4605,7 +4607,7 @@ function StrategyPage({
           <span className="asset-dot amber" />
           {item.name} <small>{item.version}</small>
         </button>
-      ))}
+        ))}
     </div>
   );
   if (strategy === 'rank-v1')
@@ -4951,17 +4953,6 @@ function StrategyPage({
               <strong>v36 · Composite Regime Research</strong>
               <small>
                 全年1143笔 · 3.46笔/天 · PF 1.030 · 胜率49.87%；冻结后段PF 1.130、胜率52.62% · 质量目标未通过
-              </small>
-            </div>
-            <Badge className="status-badge danger">验证失败</Badge>
-          </div>
-          <div className={`history-row ${isV34 ? 'active' : ''}`}>
-            <span className={`history-dot ${isV34 ? '' : 'muted'}`} />
-            <div>
-              <strong>v34 · Five-Minute Confirmation</strong>
-              <small>
-                全年 1094 笔账户成交 · 3.00 笔/天 · PF 0.823 · 胜率 43.24% ·
-                最大回撤 -99.29% · 只有频率达标
               </small>
             </div>
             <Badge className="status-badge danger">验证失败</Badge>
@@ -5314,14 +5305,6 @@ export default function Home() {
             <span className="asset-version">v36 · FAIL</span>
           </button>
           <button
-            className={`asset-item ${selectedStrategy === 'rank-v34' ? 'selected' : ''}`}
-            onClick={() => chooseStrategy('rank-v34')}
-          >
-            <span className="asset-dot violet" />
-            Five-Minute Confirmation{' '}
-            <span className="asset-version">v34 · FAIL</span>
-          </button>
-          <button
             className={`asset-item ${selectedStrategy === 'rank-v33' ? 'selected' : ''}`}
             onClick={() => chooseStrategy('rank-v33')}
           >
@@ -5430,7 +5413,7 @@ export default function Home() {
           {pageContent}
           <footer className="page-footer">
             <span>
-              Gate Quant Lab · V31 preserved + V33 / V34 / V36 research
+              Gate Quant Lab · V31 preserved + V33 / V36 research
             </span>
             <span>
               <ShieldCheck size={14} /> 不构成投资建议
